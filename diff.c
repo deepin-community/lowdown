@@ -1,6 +1,5 @@
-/*	$Id$ */
 /*
- * Copyright (c) 2017--2021 Kristaps Dzonsons <kristaps@bsd.lv>
+ * Copyright (c) Kristaps Dzonsons <kristaps@bsd.lv>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -75,31 +74,13 @@ struct	pnode {
 };
 
 /*
- * When we insert or delete reference (references never match), we
- * might disrupt their order.  We want to maintain that the order of
- * footnote reference is the order of their definitions.  Use this to
- * re-order the definition queue.
- */
-struct	ref {
-	size_t			 newnum; /* refnum of cloned */
-	size_t			 oldnum; /* original refnum */
-	enum lowdown_chng	 chng; /* from old or new tree */
-	TAILQ_ENTRY(ref)	 entries;
-};
-
-TAILQ_HEAD(refq, ref);
-
-/*
- * Convenience structure to hold data we use when merging together the
- * trees, mostly for the maps and reference queue for reassembling the
- * ordered references.
+ * Convenience structure to hold maps we use when merging together the
+ * trees.
  */
 struct	merger {
 	const struct xmap *xoldmap; /* source xnodes */
 	const struct xmap *xnewmap; /* destination xnodes */
-	size_t		  id; /* maxid in new tree */
-	struct refq	  refq; /* ref re-id */
-	size_t		  refnum; /* next ref num to assign */
+	size_t		   id; /* maxid in new tree */
 };
 
 TAILQ_HEAD(pnodeq, pnode);
@@ -331,13 +312,6 @@ assign_sigs(MD5_CTX *parent, struct xmap *map,
 	case LOWDOWN_BLOCKHTML:
 		MD5Updatebuf(&ctx, &n->rndr_blockhtml.text);
 		break;
-	case LOWDOWN_FOOTNOTE_REF:
-		MD5Updatebuf(&ctx, &n->rndr_footnote_ref.key);
-		MD5Updatebuf(&ctx, &n->rndr_footnote_ref.def);
-		break;
-	case LOWDOWN_FOOTNOTE_DEF:
-		MD5Updatebuf(&ctx, &n->rndr_footnote_def.key);
-		break;
 	default:
 		break;
 	}
@@ -546,7 +520,7 @@ match_singleton(const struct lowdown_node *n)
 }
 
 /*
- * Algorithm to "propogate up" according to "Phase 3" of sec. 5.2.
+ * Algorithm to "propagate up" according to "Phase 3" of sec. 5.2.
  * This also uses the heuristic described in "Tuning" for how many
  * levels to search upward.
  * I augment this by making singleton children pass upward.
@@ -605,7 +579,7 @@ match_up(struct xnode *xnew, struct xmap *xnewmap,
 }
 
 /*
- * Algorithm that "propogates down" according to "Phase 3" of sec. 5.2.
+ * Algorithm that "propagates down" according to "Phase 3" of sec. 5.2.
  * This (recursively) makes sure that a matched tree has all of the
  * subtree nodes also matched.
  */
@@ -793,7 +767,7 @@ node_clonetree(const struct lowdown_node *v, size_t *id)
 	struct lowdown_node *n, *nn;
 	const struct lowdown_node *vv;
 
-	if ((n = node_clone(v, *id++)) == NULL)
+	if ((n = node_clone(v, (*id)++)) == NULL)
 		return NULL;
 
 	TAILQ_FOREACH(vv, &v->children, entries) {
@@ -1018,85 +992,6 @@ out:
 }
 
 /*
- * Insert a footnote reference into our queue.
- * This is because later we'll use ref_reorder() to make sure that the
- * footnotes in the cloned tree are in the correct order.
- */
-static int
-ref_insert(struct lowdown_node *nn, 
-	const struct lowdown_node *nf, struct merger *parms)
-{
-	struct ref	*ref;
-
-	if ((ref = calloc(1, sizeof(struct ref))) == NULL)
-		return 0;
-	assert(nf->type == LOWDOWN_FOOTNOTE_REF);
-	TAILQ_INSERT_TAIL(&parms->refq, ref, entries);
-	ref->oldnum = nf->rndr_footnote_ref.num;
-	nn->rndr_footnote_ref.num = parms->refnum++;
-	ref->newnum = nn->rndr_footnote_ref.num;
-	ref->chng = nn->chng;
-	return 1;
-}
-
-static void
-ref_free(struct merger *parms)
-{
-	struct ref	*ref;
-
-	while ((ref = TAILQ_FIRST(&parms->refq)) != NULL) {
-		TAILQ_REMOVE(&parms->refq, ref, entries);
-		free(ref);
-	}
-}
-
-/*
- * Run this instead of trying to process the footnote block.
- * This will manually go through all children of the footnote block
- * (which must be footnote definitions, obviously) and put them in the
- * correct order as dictated by the possibly-reordered ref_insert()
- * entries.
- */
-static int
-ref_reorder(struct lowdown_node *n, 
-	const struct lowdown_node *nold,
-	const struct lowdown_node *nnew,
-	struct merger *parms)
-{
-	struct ref			*ref;
-	const struct lowdown_node	*nn;
-	struct lowdown_node		*nc;
-
-	TAILQ_FOREACH(ref, &parms->refq, entries) {
-		nn = NULL;
-		if (ref->chng == LOWDOWN_CHNG_DELETE) {
-			TAILQ_FOREACH(nn, &nold->children, entries) {
-				assert(nn->type == LOWDOWN_FOOTNOTE_DEF);
-				if (nn->rndr_footnote_def.num == ref->oldnum)
-					break;
-			}
-		} else {
-			TAILQ_FOREACH(nn, &nnew->children, entries) {
-				assert(nn->type == LOWDOWN_FOOTNOTE_DEF);
-				if (nn->rndr_footnote_def.num == ref->oldnum)
-					break;
-			}
-		}
-		if (nn == NULL)
-			continue;
-		if ((nc = node_clonetree(nn, &parms->id)) == NULL)
-			return 0;
-		TAILQ_INSERT_TAIL(&n->children, nc, entries);
-		nc->parent = n;
-		nc->chng = ref->chng;
-		assert(nc->type == LOWDOWN_FOOTNOTE_DEF);
-		nc->rndr_footnote_def.num = ref->newnum;
-	}
-
-	return 1;
-}
-
-/*
  * Merge the new tree "nnew" with the old "nold" using a depth-first
  * algorithm.
  * The produced tree will show the new tree with deleted nodes from the
@@ -1130,19 +1025,6 @@ node_merge(const struct lowdown_node *nold,
 	if ((n = node_clone(nnew, parms->id++)) == NULL)
 		goto err;
 
-	/* 
-	 * Special handling of footnotes: we might have rearranged the
-	 * order in which footnote definitions are displayed.  So now we
-	 * go through the queue of footnotes and insert them in the
-	 * order they were defined.
-	 */
-
-	if (n->type == LOWDOWN_FOOTNOTES_BLOCK) {
-		if (!ref_reorder(n, nold, nnew, parms))
-			goto err;
-		return n;
-	}
-
 	/* Now walk through the children on both sides. */
 
 	nold = TAILQ_FIRST(&nold->children);
@@ -1168,9 +1050,6 @@ node_merge(const struct lowdown_node *nold,
 			TAILQ_INSERT_TAIL(&n->children, nn, entries);
 			nn->parent = n;
 			nn->chng = LOWDOWN_CHNG_DELETE;
-			if (nn->type == LOWDOWN_FOOTNOTE_REF &&
-			    !ref_insert(nn, nold, parms))
-				goto err;
 			nold = TAILQ_NEXT(nold, entries);
 		}
 
@@ -1192,9 +1071,6 @@ node_merge(const struct lowdown_node *nold,
 			TAILQ_INSERT_TAIL(&n->children, nn, entries);
 			nn->parent = n;
 			nn->chng = LOWDOWN_CHNG_INSERT;
-			if (nn->type == LOWDOWN_FOOTNOTE_REF &&
-			    !ref_insert(nn, nnew, parms))
-				goto err;
 			nnew = TAILQ_NEXT(nnew, entries);
 		}
 
@@ -1225,9 +1101,6 @@ node_merge(const struct lowdown_node *nold,
 			TAILQ_INSERT_TAIL(&n->children, nn, entries);
 			nn->parent = n;
 			nn->chng = LOWDOWN_CHNG_DELETE;
-			if (nn->type == LOWDOWN_FOOTNOTE_REF &&
-			    !ref_insert(nn, nold, parms))
-				goto err;
 			nold = TAILQ_NEXT(nold, entries);
 		}
 
@@ -1241,9 +1114,6 @@ node_merge(const struct lowdown_node *nold,
 			TAILQ_INSERT_TAIL(&n->children, nn, entries);
 			nn->parent = n;
 			nn->chng = LOWDOWN_CHNG_INSERT;
-			if (nn->type == LOWDOWN_FOOTNOTE_REF &&
-			    !ref_insert(nn, nnew, parms))
-				goto err;
 			nnew = TAILQ_NEXT(nnew, entries);
 		}
 
@@ -1286,9 +1156,6 @@ node_merge(const struct lowdown_node *nold,
 			TAILQ_INSERT_TAIL(&n->children, nn, entries);
 			nn->parent = n;
 			nn->chng = LOWDOWN_CHNG_INSERT;
-			if (nn->type == LOWDOWN_FOOTNOTE_REF &&
-			    !ref_insert(nn, nnew, parms))
-				goto err;
 			nnew = TAILQ_NEXT(nnew, entries);
 			continue;
 		}
@@ -1305,9 +1172,6 @@ node_merge(const struct lowdown_node *nold,
 			TAILQ_INSERT_TAIL(&n->children, nn, entries);
 			nn->parent = n;
 			nn->chng = LOWDOWN_CHNG_DELETE;
-			if (nn->type == LOWDOWN_FOOTNOTE_REF &&
-			    !ref_insert(nn, nold, parms))
-				goto err;
 			nold = TAILQ_NEXT(nold, entries);
 		}
 
@@ -1333,9 +1197,6 @@ node_merge(const struct lowdown_node *nold,
 				goto err;
 			TAILQ_INSERT_TAIL(&n->children, nn, entries);
 			nn->parent = n;
-			if (nn->type == LOWDOWN_FOOTNOTE_REF &&
-			    !ref_insert(nn, nnew, parms))
-				goto err;
 		}
 
 		nold = TAILQ_NEXT(nold, entries);
@@ -1350,9 +1211,6 @@ node_merge(const struct lowdown_node *nold,
 		TAILQ_INSERT_TAIL(&n->children, nn, entries);
 		nn->parent = n;
 		nn->chng = LOWDOWN_CHNG_DELETE;
-		if (nn->type == LOWDOWN_FOOTNOTE_REF &&
-		    !ref_insert(nn, nold, parms))
-			goto err;
 		nold = TAILQ_NEXT(nold, entries);
 	}
 
@@ -1625,6 +1483,41 @@ lowdown_diff(const struct lowdown_node *nold,
 	}
 
 	/*
+	 * If our trees are *totally* different, we may end up in the
+	 * situation where our root nodes are never matched.  This will
+	 * violate an invariant in node_merge() where the entry nodes
+	 * are assumed to be matched.
+	 */
+
+	if (xnewmap.nodes[nnew->id].match == NULL) {
+		assert(nnew->type == LOWDOWN_ROOT);
+		assert(nold->type == LOWDOWN_ROOT);
+		xnew = &xnewmap.nodes[nnew->id];
+		xold = &xoldmap.nodes[nold->id];
+		assert(xold->match == NULL);
+		xnew->match = xold->node;
+		xold->match = xnew->node;
+	}
+
+	/*
+	 * Following the above, make sure that our LOWDOWN_DOC_HEADER
+	 * nodes are also matched, because they are fixed in the tree.
+	 */
+
+	n = TAILQ_FIRST(&nnew->children);
+	nn = TAILQ_FIRST(&nold->children);
+	if (n != NULL && nn != NULL &&
+	    n->type == LOWDOWN_DOC_HEADER &&
+	    nn->type == LOWDOWN_DOC_HEADER) {
+		xnew = &xnewmap.nodes[n->id];
+		xold = &xoldmap.nodes[nn->id];
+		if (xnew->match == NULL) {
+			xnew->match = xold->node;
+			xold->match = xnew->node;
+		}
+	}
+
+	/*
 	 * All nodes have been processed.
 	 * Now we need to optimise, so run a "Phase 4", sec. 5.2.
 	 * Our optimisation is nothing like the paper's.
@@ -1642,9 +1535,7 @@ lowdown_diff(const struct lowdown_node *nold,
 	memset(&parms, 0, sizeof(struct merger));
 	parms.xoldmap = &xoldmap;
 	parms.xnewmap = &xnewmap;
-	TAILQ_INIT(&parms.refq);
 	comp = node_merge(nold, nnew, &parms);
-	ref_free(&parms);
 
 	*maxn = xnewmap.maxid > xoldmap.maxid ?
 		xnewmap.maxid + 1 :

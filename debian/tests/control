@@ -1,1 +1,17 @@
+# Test whether the command-line executable works, by passing a well-known
+# Markdown file to it.
 Test-Command: lowdown LICENSE.md
+
+# Test whether the static library works by compiling and running simple program
+Tests: compile-run-static
+Depends:
+ build-essential,
+ pkgconf,
+ liblowdown-dev,
+
+# Test whether the shared library works by compiling and running simple program
+Tests: compile-run-shared
+Depends:
+ build-essential,
+ pkgconf,
+ liblowdown-dev,

@@ -1,0 +1,2 @@
+pkg-config-libmd-libbsd.patch
+regress-env-lc_all-C.patch

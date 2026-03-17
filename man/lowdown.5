@@ -1,7 +1,5 @@
-.\"	$Id$
-.\"
-.\" Copyright (c) 2017 Christina Sophonpanich <huck@divelog.blue>
-.\" Copyright (c) 2017--2021 Kristaps Dzonsons <kristaps@bsd.lv>
+.\" Copyright (c) Kristaps Dzonsons <kristaps@bsd.lv>
+.\" Copyright (c) 2017 Christina Sophonpanich
 .\"
 .\" Permission to use, copy, modify, and distribute this software for any
 .\" purpose with or without fee is hereby granted, provided that the above
@@ -59,21 +57,33 @@ Here's why everyone wants to be a fan...
 This example consists of a series of block elements: section header,
 sub-section header, paragraph, set of list elements, horizontal rule,
 then another sub-section header.
-Each block element contains span elements: normal text, emphasised text
+Each block element contains inline elements: normal text, emphasised text
 (bold and italised), an image, a link, and a span of code.
 .Pp
 This document describes the Markdown syntax accepted by
 .Xr lowdown 1 .
 .
 .
+.Sh TEXT
+Text within Markdown documents must be UTF-8.
+The document may have the byte-order mark (BOM), although this practice
+is discouraged by the Unicode standard.
+Lines of text may be UNIX terminated
+.Pq Sq \en
+or DOS
+.Pq Sq \er\en .
+In the latter case, carriage returns are stripped from input if detected
+at the first line.
+.
+.
 .Sh BLOCK ELEMENTS
 A block element starts on a new line and extends to the next blank line
 or block element.
-A block element contains span elements.
+A block element contains inline elements.
 .
 .Ss Paragraphs and Line Breaks
 A paragraph is made up of one or more lines of text possibly containing
-span elements.
+inline elements.
 Paragraphs are separated by blank lines.
 .Pp
 To insert a hard line break (i.e., a line-break in the input that is
@@ -109,7 +119,23 @@ the line separated by one space followed by the header.
 .Pp
 If commonmark input parsing is enabled, the space is required after the
 hash-marks in any hash-marked header.
-.
+.Pp
+Both types support PHP Extra attributes enclosed in curly braces.
+These may begin at any point and must end at the end of the line.
+.Bd -literal -offset indent
+## Star Trek: Enterprise { #stent }
+
+Star Trek: Enterprise { .reboots }
+---------------------
+.Ed
+.Pp
+Non-empty values with a leading period are interpreted as HTML (CSS) or
+OpenDocument classes, and values with a leading pound symbol are
+interpreted as in-document link identifiers.
+.Pp
+Extra attribute identifiers override the default mechanism for creating
+header identifiers.
+They should contain only ASCII alphanumeric characters.
 .Ss Block Quotes
 Block quoted sections are invoked with a single right-angle bracket
 .Pq Dq >
@@ -154,6 +180,34 @@ blocks.
 >     yes | read engage
 .Ed
 .
+.Ss Admonitions
+Also called
+.Qq callouts ,
+these special block quotes call attention to contents.
+These are generally rendered as-is, but some output modes will specially
+render admonitions to highlight the content.
+.Bd -literal -offset indent
+> **Note**
+>
+> The computer is voiced by Majel Barrett.
+.Ed
+.Pp
+Callouts begin with a double-emphasis
+.Qq Note
+or
+.Qq Warning ,
+and omitting the initial newline suppresses white-space after the
+callout type.
+This is GFM syntax.
+The MDN syntax includes an initial phrase following the callout type and
+colon, and also supports the
+.Qq Callout
+type:
+.Bd -literal -offset indent
+> **Warning:** red alert.
+>
+> Romulan warbird decloaking!
+.Ed
 .Ss Lists
 Lists may be specified as ordered (numbered) or unordered.
 Ordered lists are invoked as numbers followed by periods
@@ -311,6 +365,23 @@ Here is how you start the program xterm:
 
     xterm &
 .Ed
+.Pp
+Alternatively, code blocks are called
+.Dq fenced
+if they're surrounded in three or more matching backticks or tildes.
+Code fences may optionally include the language used in the code fence
+following the header, such as in the following.
+.Bd -literal -offset indent
+```c
+int main(void) {
+  puts("Engage!");
+  return 0;
+}
+```
+.Ed
+.Pp
+The language, if provided, is usually passed into the output is
+auxiliary information such as an HTML class.
 .
 .Ss Horizontal Rules
 A horizontal rule is a line that goes across an output page.
@@ -335,14 +406,12 @@ ___________________________
 .
 .Ss Metadata
 Documents can include metadata that is not part of the main text.
-The syntax loosely follows the
-.Qq Multimarkdown
-specification.
+The syntax follows the MMD and Pandoc specifications.
 .Pp
-The metadata block begins on the document's first line and continues
-until the first blank line.
-It consists of one or more key-value pairs, with keys and values
-separated by a colon, and pairs separated by a newline.
+In the MMD syntax, the block begins on the document's first line and
+continues until the first blank line.
+Keys and values are separated by a colon, and pairs separated by a
+newline.
 A key (and following value) must exist on the line beginning the
 metadata pair, but the value may span multiple lines.
 .Bd -literal -offset indent
@@ -353,6 +422,13 @@ Summary: As part of an exchange program, we're taking
  of Commander Riker to the cruiser Pagh.
 Stardate: 43917.4
 .Ed
+.Pp
+Alternatively, a block of MMD metadata may begin with a line of
+.Qq ---
+and end with
+.Qq ---
+or
+.Qq \&... .
 .Pp
 If there are multiple lines of text in a metadata value, subsequent
 lines should (but need not) be offset with whitespace.
@@ -369,8 +445,9 @@ Metadata keys must consist of alphanumeric ASCII characters, the hyphen
 .Pq Qq \&- ,
 or the underscore
 .Pq Qq \&_ .
-They must have at least one character and are stripped of white-space
-and converted to lower case.
+They must have at least one character and are stripped of white-space,
+have non-conforming characters replaced with underscores, and converted
+to lower case.
 .Pp
 Metadata values are opaque text: Markdown statements (e.g., italics,
 entities, etc.) are copied as-is.
@@ -382,14 +459,74 @@ is retained.
 This check happens after canonicalising the name by stripping spaces,
 converting to lower-case, and substituting unknown characters.
 .Pp
-Metadata values may be pasted into a document by referencing the
+In the Pandoc syntax, the block stops at the first line not starting
+with a percent sign or space.
+Metadata is limited to at most three keys: title, author(s), and date.
+The first line is for title, the second (if provided) for author(s), and
+the third (also if provided) for date.
+Lines may continue by having a subsequent line begin with a space.
+If only one leading-percent line is included, the metadata is only for
+the title; if two, for a title and author(s); and so on.
+If a leading-percent line is blank, the corresponding metadata is left
+empty (unspecified).
+.Bd -literal -offset indent
+% A Skin of Evil
+% Tasha Yar
+  Armus
+% 1988-04-2525
+
+Wow what a day...
+.Ed
+.Pp
+Multiple authors may be separated by multiple white-space (including
+newlines), a semicolon, or both.
+.Pp
+The Pandoc title line is automatically scanned for whether it's a
+manpage-style title:
+.Bd -literal -offset indent
+% TREK(6)
+.Ed
+.Pp
+.Nm lowdown
+recognises a manpage title from the open parenthesis followed by a
+number (or
+.Qq n ) ,
+optional following characters, then a closing parenthesis.
+If found, the title is broken down into title and section.
+Any text following the title is further recognised as the source and, if
+a vertical bar is detected, what comes after as the volume.
+.Bd -literal -offset indent
+% TREK(6) OpenBSD | Games Manual
+.Ed
+.Pp
+These may be accessed with the
+.Li title
+and
+.Li section
+metadata keys, and optionally
+.Li volume
+and
+.Li source .
+.Pp
+Using either syntax, dates should be in the YYYY-MM-DD format, but can
+be in any format.
+Metadata values may be pasted into a document by
+referencing the
 .Li \&[%key] ,
 such as using the above example, again with the caveat that Markdown
 annotations (italics, etc.) are copied verbatim:
 .Bd -literal -offset indent
-Stardate: 43917.4
+date: 43917.4
 
-It's currently stardate [%stardate].
+It's currently stardate [%date].
+.Ed
+.Pp
+Or using Pandoc:
+.Bd -literal -offset indent
+%
+%
+% 43917.4
+It's currently stardate [%date].
 .Ed
 .
 .
@@ -438,10 +575,10 @@ Officer | Rank
 Jean-Luc Picard | Captain
 .Ed
 .Pp
-Table columns may contain arbitrary span elements.
+Table columns may contain arbitrary inline elements.
 .
 .Ss Footnote Definition
-Footnotes are a MMD (Multimarkdown) extension of the basic syntax.
+Footnotes are a MMD extension of the basic syntax.
 Footnote definitions may occur anywhere in the text (except within
 blocks) and are
 .Dq pointed to
@@ -509,14 +646,22 @@ Accepted elements are
 .Li <script> ,
 .Li <style> ,
 .Li <table> ,
-.Li <ul> ,
-and self-closing
-.Li <hr /> .
-.Sh SPAN ELEMENTS
-Span elements are inline elements (including normal text) within block
-elements, for example, a span of emphasised text or a hyperlink.
-A span element cannot contain a block element, but can contain other
-span elements.
+.Li <ul> .
+The void elements
+.Li <br /> ,
+.Li <hr /> ,
+.Li <link /> ,
+and
+.Li <meta />
+are also recognised, and need not be self-closed.
+.Sh INLINE ELEMENTS
+Elements within a block element.
+Sometimes called
+.Pq inline
+elements.
+For example, normal text, a span of emphasised text, or a hyperlink.
+An inline element cannot contain a block element, but can contain other
+inline elements.
 .
 .Ss Emphasis
 There are two different styles of emphasis: strong, usually rendered as
@@ -604,6 +749,7 @@ followed by the corresponding URL or path, then an optional title.
 .Pp
 The title may be delimited with single quotes, double quotes, or
 parenthesis.
+It is only rendered in HTML output.
 It encompasses all text until the last delimiter before the end of line,
 so it may contain delimiters.
 The title may be on its own line.
@@ -633,10 +779,13 @@ Attributes are separated by spaces.
 .Pp
 Values with a leading period
 .Pq Qq \&.class
-are interpreted as HTML (CSS) classes, and values with a leading pound
-symbol
+are interpreted as HTML (CSS) or OpenDocument classes, and values with
+a leading pound symbol
 .Pq Qq \&#id
-are interpreted as HTML identifiers.
+are interpreted as in-document link identifiers.
+.Pp
+Nested links are disallowed by CommonMark and will result in unportable
+behaviour if used.
 .
 .Ss Automatic Links
 Automatic links are links to URLs or emails addresses that do not require text
@@ -727,21 +876,21 @@ Value pairs
 .Qq width=xx
 and
 .Qq height=xx
-are interpreted as HTML (CSS) or LaTeX dimensions.
+are interpreted as HTML (CSS), OpenOffice, or LaTeX dimensions.
 These override set pixel dimensions.
-Percentages are understood by both media; otherwise, dimension units are
-interpreted according to the medium.
+Percentages are understood by all three media; otherwise, dimension
+units are interpreted according to the medium.
 .Pp
 Values with a leading period
 .Pq Qq \&.class
-are interpreted as HTML (CSS) classes, and values with a leading pound
-symbol
+are interpreted as HTML (CSS) or OpenDocument classes, and values with a
+leading pound symbol
 .Pq Qq \&#id
-are interpreted as HTML identifiers.
+are interpreted as in-document link identifiers.
 .
 .Ss Code
 In addition to code blocks, inline code spans may be specified within
-paragraphs or other block or span elements.
+paragraphs or other block or inline elements.
 To invoke a span of code, surround the code using backtick quotes
 .Pq Dq \&` .
 .Bd -literal -offset indent
@@ -751,7 +900,7 @@ Use the `ifconfig iwm0` command.
 .Pp
 To include literal backticks
 .Pq Dq \&`
-within a code of span,
+within a code span,
 surround the code using multiple backticks
 .Pq Dq \&(`` .
 .Bd -literal -offset indent
@@ -765,7 +914,7 @@ leave a space between the literal backtick and the delimiting backticks.
 .Ed
 .
 .Ss Footnote Reference
-Footnotes are a MMD (Multimarkdown) extension of the basic syntax.
+Footnotes are a MMD extension of the basic syntax.
 Footnote references point into a block-level
 .Sx Footnote Definition .
 They consist of the footnote name in square brackets, preceded by the
@@ -776,16 +925,29 @@ P'tahk[^pt], tell me who you are, or I will kill you right here!
 .Pp
 The footnote name is rendered as a number.
 There may only be one footnote reference per definition.
-If a footnote refers to an unknown definition, it is printed as-is.
+If a footnote reference refers to an unknown definition, or if it has
+already been used in referring to a definition, it is printed as-is.
+Footnote definitions without references are not printed.
+Nested footnotes are not allowed.
 .
 .Ss Superscripts
 Uses the caret
 .Pq Dq \(ha
-to start a superscript.
-The superscripted material continues to white-space or, if starting with
-an open parenthesis, the close parenthesis.
+to start a superscript, then another to end it.
+Between these, white-space is not allowed.
+This is the GFM style.
 .Bd -literal -offset indent
-Though a great book, Q\(ha2 (Q\(ha(squared)) isn't Star Trek canon.
+Though a great book, Q\(ha2\(ha isn't Star Trek canon.
+.Ed
+.Pp
+If
+.Qq short
+.Pq traditional
+style super-scripts are enabled, start with a caret, continuing to
+white-space; or, if starting with an open parenthesis, continuing to the
+close parenthesis with possible white-space.
+.Bd -literal -offset indent
+Though a great book, Q\(ha2 isn't Star Trek canon.
 .Ed
 .
 .Ss HTML Content
@@ -818,7 +980,7 @@ output in escaping leading periods and so forth.
 .
 .Ss Backslash Escapes
 Backslash escapes render literal characters that would otherwise invoke
-a particular block or span element.
+a particular block or inline element.
 For example, surrounding a phrase with single asterisks renders it as an
 emphasis:
 .Bd -literal -offset indent
@@ -915,7 +1077,8 @@ They include:
 .Bl -tag -width Ds
 .It Lk http://commonmark.org CommonMark
 .It Lk https://github.github.com/gfm GFM
-.It Lk http://fletcherpenney.net/multimarkdown Multimarkdown
+.It Lk http://fletcherpenney.net/multimarkdown Multimarkdown (MMD)
+.It Lk https://pandoc.org/MANUAL.html Pandoc
 .It Lk https://michelf.ca/projects/php-markdown/extra PHP Extra
 .El
 .Sh AUTHORS

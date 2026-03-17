@@ -1,9 +1,8 @@
-/*	$Id$ */
 /*
  * Copyright (c) 2008, Natacha Porté
  * Copyright (c) 2011, Vicent Martí
  * Copyright (c) 2014, Xavier Mendez, Devin Torres and the Hoedown authors
- * Copyright (c) 2016--2017, 2021 Kristaps Dzonsons
+ * Copyright (c) Kristaps Dzonsons <kristaps@bsd.lv>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -23,6 +22,7 @@
 # include <sys/queue.h>
 #endif
 
+#include <assert.h>
 #include <ctype.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -234,11 +234,12 @@ ssize_t
 halink_email(size_t *rewind_p, struct lowdown_buf *link, 
 	char *data, size_t max_rewind, size_t size)
 {
-	size_t	 link_end, rewind;
+	size_t	 link_end;
+	ssize_t	 rewind;
 	int	 nb = 0, np = 0;
 	char	 c;
 
-	for (rewind = 0; rewind < max_rewind; ++rewind) {
+	for (rewind = 0; rewind < (ssize_t)max_rewind; ++rewind) {
 		c = data[-1 - rewind];
 
 		if (isalnum((unsigned char)c))
@@ -278,7 +279,8 @@ halink_email(size_t *rewind_p, struct lowdown_buf *link,
 
 	if (!hbuf_put(link, data - rewind, link_end + rewind))
 		return -1;
-	*rewind_p = rewind;
+	assert(rewind >= 0);
+	*rewind_p = (size_t)rewind;
 
 	return link_end;
 }
@@ -290,12 +292,13 @@ ssize_t
 halink_url(size_t *rewind_p, struct lowdown_buf *link,
 	char *data, size_t max_rewind, size_t size)
 {
-	size_t link_end, rewind = 0, domain_len;
+	size_t link_end, domain_len;
+	ssize_t rewind = 0;
 
 	if (size < 4 || data[1] != '/' || data[2] != '/')
 		return 0;
 
-	while (rewind < max_rewind && 
+	while (rewind < (ssize_t)max_rewind && 
 	       isalpha((unsigned char)data[-1 - rewind]))
 		rewind++;
 
@@ -321,7 +324,8 @@ halink_url(size_t *rewind_p, struct lowdown_buf *link,
 
 	if (!hbuf_put(link, data - rewind, link_end + rewind))
 		return -1;
-	*rewind_p = rewind;
+	assert(rewind >= 0);
+	*rewind_p = (size_t)rewind;
 
 	return link_end;
 }

@@ -1,9 +1,8 @@
-/*	$Id$ */
 /*
  * Copyright (c) 2008, Natacha Porté
  * Copyright (c) 2011, Vicent Martí
  * Copyright (c) 2014, Xavier Mendez, Devin Torres and the Hoedown authors
- * Copyright (c) 2016, 2021, Kristaps Dzonsons
+ * Copyright (c) Kristaps Dzonsons <kristaps@bsd.lv>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -24,6 +23,7 @@
 #endif
 
 #include <assert.h>
+#include <ctype.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -44,20 +44,38 @@ hbuf_init(struct lowdown_buf *buf, size_t unit, int buffer_free)
 	buf->buffer_free = buffer_free;
 }
 
+/*
+ * Return a buffer that deep-copies "buf".  Returns the pointer of NULL
+ * on memory allocation failure.
+ */
+struct lowdown_buf *
+hbuf_dup(const struct lowdown_buf *buf)
+{
+	struct lowdown_buf	*v;
+
+	v = calloc(1, sizeof(struct lowdown_buf));
+	if (v != NULL && hbuf_clone(buf, v))
+		return v;
+	free(v);
+	return NULL;
+}
+
+/*
+ * Deep-copies "buf" into "v", wiping its contents.  Returns TRUE on
+ * success or FALSE on memory allocation failure.
+ */
 int
 hbuf_clone(const struct lowdown_buf *buf, struct lowdown_buf *v)
 {
 
-	v->data = NULL;
+	*v = *buf;
 	if (buf->size) {
 		if ((v->data = malloc(buf->size)) == NULL)
 			return 0;
 		memcpy(v->data, buf->data, buf->size);
-	} 
-	v->size = buf->size;
-	v->maxsize = buf->maxsize;
-	v->unit = buf->unit;
-	v->buffer_free = buf->buffer_free;
+	} else
+		v->data = NULL;
+
 	return 1;
 }
 
@@ -316,3 +334,166 @@ hbuf_shortlink(struct lowdown_buf *out, const struct lowdown_buf *link)
 	return HBUF_PUTSL(out, "/...") &&
 		hbuf_put(out, rcp, sz - (rcp - link->data));
 }
+
+/**
+ * Convert the buffer into an identifier.  These are used in various
+ * front-ends for linking to a section identifier.  Use pandoc's format
+ * for these identifiers: lowercase, no specials except some, and
+ * collapsing whitespace into a dash.
+ */
+struct lowdown_buf *
+hbuf_dupname(const struct lowdown_buf *buf)
+{
+	struct lowdown_buf	*nbuf;
+	size_t			 i;
+	int			 last_space = 1;
+	char			 c;
+
+	if ((nbuf = hbuf_new(32)) == NULL)
+		goto err;
+
+	for (i = 0; i < buf->size; i++) {
+		if (isalnum((unsigned char)buf->data[i]) ||
+		    buf->data[i] == '-' ||
+		    buf->data[i] == '.' ||
+		    buf->data[i] == '_') {
+			c = tolower((unsigned char)buf->data[i]);
+			if (!hbuf_putc(nbuf, c))
+				goto err;
+			last_space = 0;
+		} else if (isspace((unsigned char)buf->data[i])) {
+			if (!last_space) {
+				if (!HBUF_PUTSL(nbuf, "-"))
+					goto err;
+				last_space = 1;
+			}
+		}
+	}
+
+	if (nbuf->size == 0 && !HBUF_PUTSL(nbuf, "section"))
+		goto err;
+
+	return nbuf;
+err:
+	hbuf_free(nbuf);
+	return NULL;
+}
+
+/*
+ * Format the raw string used for creating header identifiers.  This
+ * recursively drops through the header contents extracting text along
+ * the way.
+ */
+int
+hbuf_extract_text(struct lowdown_buf *ob, const struct lowdown_node *n)
+{
+	const struct lowdown_node	*child;
+
+	/* For footnotes, use nothing and don't descend to children. */
+
+	if (n->type == LOWDOWN_FOOTNOTE)
+		return 1;
+
+	/* All non-footnotes are ok... */
+
+	if (n->type == LOWDOWN_NORMAL_TEXT)
+		if (!hbuf_putb(ob, &n->rndr_normal_text.text))
+			return 0;
+	if (n->type == LOWDOWN_IMAGE)
+		if (!hbuf_putb(ob, &n->rndr_image.alt))
+			return 0;
+	if (n->type == LOWDOWN_LINK_AUTO)
+		if (!hbuf_putb(ob, &n->rndr_autolink.link))
+			return 0;
+	TAILQ_FOREACH(child, &n->children, entries)
+		if (!hbuf_extract_text(ob, child))
+			return 0;
+
+	return 1;
+}
+
+/*
+ * Return a unique header identifier for "header".  Return zero on
+ * failure (memory), non-zero on success.  The new value is appended to
+ * the queue, which must be freed with hentryq_clear at some point.
+ */
+const struct lowdown_buf *
+hbuf_id(const struct lowdown_buf *header, const struct lowdown_node *n,
+	struct hentryq *q)
+{
+	struct lowdown_buf		*buf = NULL, *nbuf = NULL;
+	const struct lowdown_node	*child;
+	size_t				 count;
+	struct hentry			*he = NULL, *entry;
+
+	if (header == NULL) {
+		if ((nbuf = hbuf_new(32)) == NULL)
+			goto out;
+		TAILQ_FOREACH(child, &n->children, entries)
+			if (!hbuf_extract_text(nbuf, child))
+				goto out;
+		if ((buf = hbuf_dupname(nbuf)) == NULL)
+			goto out;
+		hbuf_free(nbuf);
+		nbuf = NULL;
+	} else
+		if ((buf = hbuf_dupname(header)) == NULL)
+			goto out;
+
+	TAILQ_FOREACH(entry, q, entries)
+		if (hbuf_eq(entry->buf, buf))
+			break;
+
+	if (entry == NULL) {
+		he = calloc(1, sizeof(struct hentry));
+		if (he == NULL)
+			goto out;
+		TAILQ_INSERT_TAIL(q, he, entries);
+		he->buf = buf;
+		return buf;
+	}
+
+	if ((nbuf = hbuf_new(32)) == NULL)
+		goto out;
+
+	for (count = 1;; count++) {
+		hbuf_truncate(nbuf);
+		if (!hbuf_putb(nbuf, buf))
+			goto out;
+		if (!hbuf_printf(nbuf, "-%zu", count))
+			goto out;
+		TAILQ_FOREACH(entry, q, entries)
+			if (hbuf_eq(entry->buf, nbuf))
+				break;
+		if (entry == NULL) {
+			he = calloc(1, sizeof(struct hentry));
+			if (he == NULL)
+				goto out;
+			TAILQ_INSERT_TAIL(q, he, entries);
+			he->buf = nbuf;
+			hbuf_free(buf);
+			return nbuf;
+		}
+	}
+out:
+	hbuf_free(buf);
+	hbuf_free(nbuf);
+	free(he);
+	return NULL;
+}
+
+void
+hentryq_clear(struct hentryq *q)
+{
+	struct hentry	*he;
+
+	if (q == NULL)
+		return;
+
+	while ((he = TAILQ_FIRST(q)) != NULL) {
+		TAILQ_REMOVE(q, he, entries);
+		hbuf_free(he->buf);
+		free(he);
+	}
+}
+

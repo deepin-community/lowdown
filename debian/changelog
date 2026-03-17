@@ -1,3 +1,149 @@
+lowdown (2.0.4-2) unstable; urgency=medium
+
+  * Add liblowdown-dev -> libbsd-dev, libmd-dev dependencies, as these are
+    a) required for static linking and b) required in all cases by pkgconf's
+    stricter parser. (Closes: #1126924)
+  * Remove Rules-Requires-Root: no (now the default).
+
+ -- Faidon Liambotis <paravoid@debian.org>  Fri, 13 Feb 2026 10:34:28 +0100
+
+lowdown (2.0.4-1) unstable; urgency=medium
+
+  * New upstream release.
+    - Update debian/copyright with authors for new compats.c code.
+    - Workaround a new oconfigure distclean limitation..
+  * Fix a long-standing regression testing issue, where the test suite was
+    using en_US.UTF-8 for its locale, which is not part of a minimal Debian
+    chroot. Patch the Makefile to use C.UTF-8 instead.
+  * Update debian/watch to version 5.
+  * Remove Priority: optional; this is now the default.
+  * Bump Standards-Version to 4.7.3.
+
+ -- Faidon Liambotis <paravoid@debian.org>  Fri, 02 Jan 2026 16:51:06 +0200
+
+lowdown (2.0.2-2) unstable; urgency=medium
+
+  * Upload to unstable.
+
+ -- Faidon Liambotis <paravoid@debian.org>  Mon, 03 Mar 2025 11:23:55 +0200
+
+lowdown (2.0.2-1) experimental; urgency=medium
+
+  * New upstream release.
+    - SONAME was bumped due to ABI changes, reflect this at the packaging
+      level by renaming the library package to liblowdown2.
+  * Build-Depend and set MAKE to "bmake", as incompatibilities with GNU Make
+    have been introduced in the upstream Makefile that are here to stay (see
+    upstream #155).
+  * Ship default templates under /usr/share/doc/lowdown/examples. Per upstream
+    #156 these are not being used at runtime.
+
+ -- Faidon Liambotis <paravoid@debian.org>  Mon, 17 Feb 2025 21:11:55 +0200
+
+lowdown (1.2.0-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Faidon Liambotis <paravoid@debian.org>  Sat, 26 Oct 2024 01:40:19 +0300
+
+lowdown (1.1.2-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Faidon Liambotis <paravoid@debian.org>  Fri, 04 Oct 2024 20:46:13 +0300
+
+lowdown (1.1.1-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Bump Standards-Version to 4.7.0, no changes needed.
+
+ -- Faidon Liambotis <paravoid@debian.org>  Wed, 25 Sep 2024 17:28:22 +0300
+
+lowdown (1.1.0-2) unstable; urgency=medium
+
+  * Use cross tools as set from buildtools.mk, to fix a FTCBFS. Thanks to
+    Helmut Grohne for the report and patch. (Closes: #1066908)
+  * Drop alternative dependency pkg-config, as it was already a transitional
+    package in bookworm.
+  * Remove liblowdown.map version script, as it is now unnecessary: upstream
+    started using -fvisibility=hidden and #pragmas to limit symbol visibility.
+
+ -- Faidon Liambotis <paravoid@debian.org>  Sat, 16 Mar 2024 14:33:12 +0200
+
+lowdown (1.1.0-1) unstable; urgency=medium
+
+  * New upstream release.
+    - Drop previously backported upstream patches related to the roff
+      constant-width problem.
+    - Drop patch "revet-soname", upstream has now reverted LIBVER to 1.
+
+ -- Faidon Liambotis <paravoid@debian.org>  Wed, 08 Nov 2023 08:33:19 +0200
+
+lowdown (1.0.2-2) unstable; urgency=medium
+
+  * Backport upstream commits to address the roff constant-width problem, i.e.
+    the usage of the "C" font for roff, which as of groff 2.3.0 results into
+    warning and, by extension, lintian warnings for downstream users.
+
+ -- Faidon Liambotis <paravoid@debian.org>  Fri, 27 Oct 2023 17:24:44 +0300
+
+lowdown (1.0.2-1) unstable; urgency=medium
+
+  * New upstream release.
+    - Drop patch dont-use-PI-for-tman, was an upstream backport.
+    - Drop patch liblowdown-lm, merged upstream.
+    - Drop manually installed liblowdown.so symlink, fixed upstream with
+      commit f3cb4f31.
+  * Add patch "revert-soname" to revert the SONAME to liblowdown.so.1, as the
+    ABI has been stable and a library transition is not warranted.
+
+ -- Faidon Liambotis <paravoid@debian.org>  Fri, 01 Sep 2023 13:48:15 +0300
+
+lowdown (1.0.0-2) unstable; urgency=medium
+
+  * Backport upstream patch to avoid the use of an -ms macro, PI, in the -Tman
+    output. This addresses a man warning ("macro 'PI' not defined") which in
+    turn is a lintian warning for packages using lowdown to generate their
+    manpage(s).
+  * Bump Standards-Version to 4.6.2, no changes needed.
+
+ -- Faidon Liambotis <paravoid@debian.org>  Sun, 09 Apr 2023 03:39:15 +0300
+
+lowdown (1.0.0-1) unstable; urgency=medium
+
+  * New upstream release.
+    - Refresh package description with upstream changes.
+    - Override dh_auto_install to install the static library, as before, as
+      the upstream "make install" now only installs the main binary.
+    - Ship the new ODT styles.xml example as an example file in the main
+      lowdown package.
+  * Upstream now ships a shared library alongside the previous static one.
+    Ship the library in a new liblowdown1 package, and adjust liblowdown-dev
+    to Depend on it.
+  * Add patch liblowdown-lm to fix an upstream issue where liblowdown.so was
+    not linked with libm.
+  * Add a temporary hack to pass a linker script to the shared library
+    build, to hide symbols that were not meant to be exposed.
+  * Mark lowdown as Multi-Arch: foreign. (Closes: #1023362)
+  * Link against libmd directly, and not through the (now deprecated) libbsd
+    wrappers for it. This adds a new Dependency, but one which was a
+    transitive dependency before.
+  * Add patch pkg-config-libmd-libbsd to add libmd and libbsd to
+    Requires.private in pkg-config, as these are required when linking
+    statically against liblowdown.a. (Closes: #1004541)
+  * Build-Depend on pkgconf as the main alternative to pkg-config, retaining
+    pkg-config to ease backports.
+  * Update lintian-overrides to handle an upstream change in the wording of
+    our existing override, and to add a new override for source-is-missing for
+    regress/diff/diff.html, which is shipped alongside its Markdown source,
+    and in fact generated by lowdown itself.
+  * Add a couple of autopkgtest tests to ensure liblowdown works, by compiling
+    a simple Markdown->HTML test program, executing it, and checking its
+    output.
+  * Bump Standards-Version to 4.6.1, no other changes needed.
+
+ -- Faidon Liambotis <paravoid@debian.org>  Sat, 07 Jan 2023 06:52:41 +0200
+
 lowdown (0.10.0-1) unstable; urgency=medium
 
   * New upstream release.

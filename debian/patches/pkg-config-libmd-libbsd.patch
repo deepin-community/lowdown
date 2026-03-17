@@ -1,0 +1,20 @@
+Description: Add libmd and libbsd to Requires.private
+ In Debian, we link to libmd and libbsd through CFLAGS and LDFLAGS, to avoid
+ using the embedded copies of these functions. Conversely, this means that
+ these are required during static linking with liblowdown.a, so add them as
+ Requires.private in the accompanied pkg-config.
+Forwarded: not-needed
+Origin: vendor
+Bug-Debian: https://bugs.debian.org/1004541
+Author: Faidon Liambotis <paravoid@debian.org>
+
+--- a/lowdown.in.pc
++++ b/lowdown.in.pc
+@@ -8,6 +8,7 @@ Description: simple markdown translator
+ URL: https://kristaps.bsd.lv/lowdown
+ Version: @VERSION@
+ Requires:
++Requires.private: libmd libbsd
+ Libs.private: 
+ Libs: -L${libdir} -llowdown -lm
+ Cflags: -I${includedir}

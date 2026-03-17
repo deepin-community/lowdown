@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021 Kristaps Dzonsons <kristaps@bsd.lv>
+ * Copyright (c) Kristaps Dzonsons <kristaps@bsd.lv>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -48,10 +48,10 @@
  */
 
 /* For inserted content.  Common parent style. */
-static const struct sty sty_chng_ins =	{ 0, 0, 0, 0,  47, 30, 0 };
+static const struct sty sty_chng_ins =	{ 0, 0, 0, 0,  44,  0, 0 };
 
 /* For deleted content.  Common parent style. */
-static const struct sty sty_chng_del =	{ 0, 0, 0, 0, 100,  0, 0 };
+static const struct sty sty_chng_del =	{ 0, 0, 0, 0,  41,  0, 0 };
 
 /* Image: >![alt](link)< */
 static const struct sty sty_img =	{ 0, 0, 1, 0,   0, 93, 1 };
@@ -137,8 +137,8 @@ static const struct sty sty_bkqt_pfx =	{ 0, 0, 0, 0,   0, 93, 0 };
 /* Block code prefix (see pfx_bkcd): ``` >|< void \n >|< main``` */
 static const struct sty sty_bkcd_pfx =	{ 0, 0, 0, 0,   0, 94, 0 };
 
-/* Table separator (see ifx_table_col, ifx_table_col) . */
-static const struct sty sty_table =	{ 0, 0, 0, 0,   0, 93, 0 };
+/* Table separator (see ifx_tbl_col, ifx_tbl_mcol, ifx_tbl_row). */
+static const struct sty sty_tbl =	{ 0, 0, 0, 0,   0, 93, 0 };
 
 /*
  * Prefixes
@@ -163,17 +163,11 @@ static const struct sty sty_table =	{ 0, 0, 0, 0,   0, 93, 0 };
  * least 4 spaces would be printed, even if it were "1. " -> " 1. ".
  */
 
-/* All non-header (child to the document root) content (no style). */
-static const struct pfx pfx_body =	{ "    ", 4 };
-
-/* All header (child to the document root) content (no style). */
-static const struct pfx pfx_header =	{ "", 0 };
-
 /* Block code (see sty_bkcd_pfx). */
-static const struct pfx pfx_bkcd =	{ "  | ", 4 };
+static const struct pfx pfx_bkcd =	{ "  │ ", 4 };
 
 /* Block quote (see sty_bkqt_pfx). */
-static const struct pfx pfx_bkqt =	{ "  | ", 4 };
+static const struct pfx pfx_bkqt =	{ "  │ ", 4 };
 
 /* Definition list data, first line (see sty_dli_pfx). */
 static const struct pfx pfx_dli_1 =	{ "  : ", 4 };
@@ -217,7 +211,7 @@ static const struct pfx pfx_header_n =	{ "#", 1 };
  */
 
 /* Footnote block header (see sty_foot). */
-static const char *ifx_foot =		"~~~~~~~~";
+static const char *ifx_foot =		"─";
 
 /* Superscript. */
 static const char *ifx_super =		"^";
@@ -225,17 +219,20 @@ static const char *ifx_super =		"^";
 /* Metadata key (see sty_meta_key). */
 static const char *ifx_meta_key =	": ";
 
-/* Horizontal rule. */
-static const char *ifx_hrule =		"~~~~~~~~";
+/* Horizontal rule (repeats until covering full space). */
+static const char *ifx_hrule =    	"─";
 
 /* Image link box left-box (see sty_imgbox). */
-static const char *ifx_imgbox_left =	"[Image";
+static const char *ifx_imgbox_left = 	"[🖻 ";
 
 /* Image link box right-box (see sty_imgbox). */
 static const char *ifx_imgbox_right =	"]";
 
 /* Image link box separator (see sty_imgbox). */
-static const char *ifx_imgbox_sep =	": ";
+static const char *ifx_imgbox_sep =	" ";
+
+/* Link separator. */
+static const char *ifx_link_sep =	" ";
 
 /* Footnote reference left-box (see sty_fref). */
 static const char *ifx_fref_left =	"[";
@@ -243,8 +240,11 @@ static const char *ifx_fref_left =	"[";
 /* Footnote reference right-box (see sty_fref). */
 static const char *ifx_fref_right =	"]";
 
-/* Table column separator (see sty_table). */
-static const char *ifx_table_col =	"|";
+/* Table column separator (see sty_tbl). */
+static const char *ifx_tbl_col =	"│";
 
-/* Table header row separator (see sty_table). */
-static const char *ifx_table_row =	"-";
+/* Table header row separator (see sty_tbl). */
+static const char *ifx_tbl_row =	"─";
+
+/* Table header row cross-separator (see sty_tbl). */
+static const char *ifx_tbl_mcol =	"┼";

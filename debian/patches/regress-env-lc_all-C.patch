@@ -1,0 +1,16 @@
+Description: Use C.UTF-8, not en_US.UTF-8, for regression testing
+Origin: vendor
+Bug: https://github.com/kristapsdz/lowdown/issues/172
+Author: Faidon Liambotis <paravoid@debian.org>
+
+--- a/Makefile
++++ b/Makefile
+@@ -187,7 +187,7 @@ REGRESS_ARGS	+= "--parse-no-autolink"
+ REGRESS_ARGS	+= "--parse-no-cmark"
+ REGRESS_ARGS	+= "--parse-no-deflists"
+ 
+-REGRESS_ENV	 = LC_ALL=en_US.UTF-8
++REGRESS_ENV	 = LC_ALL=C.UTF-8
+ 
+ all: bins lowdown.pc $(LIB_SO)
+ bins: lowdown lowdown-diff

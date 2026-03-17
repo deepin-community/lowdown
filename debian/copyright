@@ -6,7 +6,7 @@ Files: *
 Copyright: 2008 Natacha Porté
            2011 Vicent Martí
            2014 Xavier Mendez, Devin Torres and the Hoedown authors
-           2016-2021 Kristaps Dzonsons
+           2016-2025 Kristaps Dzonsons
 License: ISC
 
 Files: man/lowdown.5
@@ -27,13 +27,23 @@ License: ISC
 Files: compats.c
 Copyright: 1990, 1993, 1994 The Regents of the University of California
            1995 International Business Machines, Inc.
+           1996 David Mazieres <dm@uun.org>
            1996 Internet Software Consortium
+           1997 Niels Provos <provos@physnet.uni-hamburg.de>
+           1997 Niels Provos <provos@umich.edu>
            1998, 2000-2002, 2007, 2010 Todd C. Miller <Todd.Miller@courtesan.com>
            2000-2001 Aaron D. Gifford
+           2001-2003 Ian F. Darwin
            2004, 2005 Darren Tucker (dtucker at zip com au).
            2004 Ted Unangst and Todd Miller
            2005 Pascal Gloor <pascal.gloor@spale.com>
            2008, 2017 Otto Moerbeek <otto@drijf.net>
+           2008, 2010 Damien Miller <djm@openbsd.org>
+           2013 Markus Friedl <markus@openbsd.org>
+           2014 Google Inc.
+           2014 Ted Unangst <tedu@openbsd.org>
+           2014 Theo de Raadt <deraadt@openbsd.org>
+           2015 Sudhi Herle   <sudhi@herle.net>
            2016 Nicholas Marriott <nicholas.marriott@gmail.com>
            2017 Kristaps Dzonsons <kristaps@bsd.lv>
            2020 Stephen Gregoratto <dev@sgregoratto.me>
@@ -44,7 +54,7 @@ Comment:
  oconfigure project for the broken-down version of this file.
 
 Files: debian/*
-Copyright: 2021 Faidon Liambotis <paravoid@debian.org>
+Copyright: 2021-2026 Faidon Liambotis <paravoid@debian.org>
 License: ISC
 
 License: ISC

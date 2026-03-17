@@ -1,22 +1,29 @@
 #!/usr/bin/make -f
 
 include /usr/share/dpkg/architecture.mk
+include /usr/share/dpkg/buildflags.mk
+include /usr/share/dpkg/buildtools.mk
 
 # output every command that modifies files on the build system.
 #export DH_VERBOSE = 1
 
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
+# Upstream uses and tests with BSD Make, so prefer it over GNU
+export MAKE = /usr/bin/bmake
+
 # Use libbsd for a system copy of the BSD functions, instead of upstream's
 # embedded compats.c coming from the oconfigure project.
 # Also see https://github.com/kristapsdz/oconfigure/issues/19
-CFLAGS += $(shell pkg-config --cflags libbsd-overlay)
-LDFLAGS += $(shell pkg-config --libs libbsd-overlay)
+CFLAGS += $(shell $(PKG_CONFIG) --cflags libmd libbsd-overlay)
+LDFLAGS += $(shell $(PKG_CONFIG) --libs libmd libbsd-overlay)
 
 %:
-	dh $@
+	dh $@ --buildsystem=makefile
 
 override_dh_auto_configure:
+	AR="$(AR)" \
+	CC="$(CC)" \
 	CFLAGS="${CFLAGS}" \
 	./configure \
 		PREFIX=/usr \
@@ -25,9 +32,18 @@ override_dh_auto_configure:
 		CPPFLAGS="${CPPFLAGS}" \
 		LDFLAGS="${LDFLAGS}"
 
+override_dh_auto_install:
+	# make install only installs the main binary, not the library
+	$(MAKE) install DESTDIR=debian/tmp
+	$(MAKE) install_static DESTDIR=debian/tmp
+	$(MAKE) install_shared DESTDIR=debian/tmp
+
 override_dh_auto_test:
-	make regress
+	$(MAKE) regress
 
 override_dh_auto_clean:
 	echo > Makefile.configure
+	# an .if makes "make distclean" fail here, even though
+	# LINKER_SOSUFFIX isn't actually used by it
+	echo "LINKER_SOSUFFIX = so" >> Makefile.configure
 	dh_auto_clean

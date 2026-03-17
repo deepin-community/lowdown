@@ -1,4 +1,5 @@
-\section{An h1 header}
+\hypertarget{an-h1-header}{%
+\section{An h1 header}\label{an-h1-header}}
 
 Paragraphs are separated by a blank line.
 
@@ -28,7 +29,8 @@ Use 3 dashes for an em-dash. Use 2 dashes for ranges (ex., ``it's all
 in chapters 12--14''). Three dots \ldots{} will be converted to an ellipsis.
 Unicode is supported. ☺
 
-\subsection{An h2 header}
+\hypertarget{an-h2-header}{%
+\subsection{An h2 header}\label{an-h2-header}}
 
 Here's a numbered list:
 
@@ -68,7 +70,8 @@ for i in range(10):
     print i
 \end{verbatim}
 
-\subsubsection{An h3 header}
+\hypertarget{an-h3-header}{%
+\subsubsection{An h3 header}\label{an-h3-header}}
 
 Now a nested list:
 
@@ -105,18 +108,19 @@ Notice again how text always lines up on 4-space indents (including
 that last line which continues item 3 above).
 
 Here's a link to \href{http://foo.bar}{a website}, to a \href{local-doc.html}{local
-doc}, and to a \href{\#an-h2-header}{section heading in the current
-doc}. Here's a footnote \footnotemark[1].
+doc}, and to a \hyperlink{an-h2-header}{section heading in the current
+doc}. Here's a footnote \footnote[1]{
+Footnote text goes here.
+}.
 
 Tables can look like this:
 
-\begin{center}\begin{tabular}{ c c c }
+\begin{longtable}[]{lll}
 size & material & color  \\
 9 & leather & brown  \\
 10 & hemp canvas & natural  \\
 11 & glass & transparent  \\
-\end{tabular}
-\end{center}
+\end{longtable}
 
 Table: Shoes, their sizes, and what they're made of
 
@@ -142,6 +146,3 @@ Images can be specified like so:
 
 And note that you can backslash-escape any punctuation characters
 which you wish to be displayed literally, ex.: `foo`, *bar*, etc.
-\footnotetext[1]{
-Footnote text goes here.
-}

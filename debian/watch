@@ -1,3 +1,3 @@
-version=4
-https://kristaps.bsd.lv/lowdown/snapshots/ \
-  lowdown-([\d\.]+)\.tar\.gz debian uupdate
+Version: 5
+Source: https://kristaps.bsd.lv/lowdown/snapshots/
+Matching-Pattern: @PACKAGE@-@ANY_VERSION@@ARCHIVE_EXT@

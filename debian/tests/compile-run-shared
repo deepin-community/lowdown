@@ -1,0 +1,15 @@
+#!/bin/sh
+
+set -e
+
+if [ -n "${DEB_HOST_GNU_TYPE:-}" ]; then
+  CROSS_COMPILE="$DEB_HOST_GNU_TYPE-"
+else
+  CROSS_COMPILE=
+fi
+
+${CROSS_COMPILE}gcc -o $AUTOPKGTEST_TMP/test-html-shared \
+   $(dirname $0)/test-html.c \
+   $(${CROSS_COMPILE}pkg-config --libs --shared lowdown)
+
+$AUTOPKGTEST_TMP/test-html-shared | grep -q '<h1>This is a header</h1>'

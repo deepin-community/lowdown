@@ -1,6 +1,5 @@
-/*	$Id$ */
 /*
- * Copyright (c) 2017--2021 Kristaps Dzonsons <kristaps@bsd.lv>
+ * Copyright (c) Kristaps Dzonsons <kristaps@bsd.lv>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -47,8 +46,6 @@ static	const char *const names[LOWDOWN__MAX] = {
 	"LOWDOWN_TABLE_BODY",           /* LOWDOWN_TABLE_BODY */
 	"LOWDOWN_TABLE_ROW",            /* LOWDOWN_TABLE_ROW */
 	"LOWDOWN_TABLE_CELL",           /* LOWDOWN_TABLE_CELL */
-	"LOWDOWN_FOOTNOTES_BLOCK",      /* LOWDOWN_FOOTNOTES_BLOCK */
-	"LOWDOWN_FOOTNOTE_DEF",         /* LOWDOWN_FOOTNOTE_DEF */
 	"LOWDOWN_BLOCKHTML",            /* LOWDOWN_BLOCKHTML */
 	"LOWDOWN_LINK_AUTO",            /* LOWDOWN_LINK_AUTO */
 	"LOWDOWN_CODESPAN",             /* LOWDOWN_CODESPAN */
@@ -60,15 +57,15 @@ static	const char *const names[LOWDOWN__MAX] = {
 	"LOWDOWN_LINK",                 /* LOWDOWN_LINK */
 	"LOWDOWN_TRIPLE_EMPHASIS",      /* LOWDOWN_TRIPLE_EMPHASIS */
 	"LOWDOWN_STRIKETHROUGH",        /* LOWDOWN_STRIKETHROUGH */
+	"LOWDOWN_SUBSCRIPT",		/* LOWDOWN_SUBSCRIPT */
 	"LOWDOWN_SUPERSCRIPT",          /* LOWDOWN_SUPERSCRIPT */
-	"LOWDOWN_FOOTNOTE_REF",         /* LOWDOWN_FOOTNOTE_REF */
+	"LOWDOWN_FOOTNOTE",		/* LOWDOWN_FOOTNOTE */
 	"LOWDOWN_MATH_BLOCK",           /* LOWDOWN_MATH_BLOCK */
 	"LOWDOWN_RAW_HTML",             /* LOWDOWN_RAW_HTML */
 	"LOWDOWN_ENTITY",               /* LOWDOWN_ENTITY */
 	"LOWDOWN_NORMAL_TEXT",          /* LOWDOWN_NORMAL_TEXT */
 	"LOWDOWN_DOC_HEADER",           /* LOWDOWN_DOC_HEADER */
 	"LOWDOWN_META",			/* LOWDOWN_META */
-	"LOWDOWN_DOC_FOOTER",           /* LOWDOWN_DOC_FOOTER */
 };
 
 static int
@@ -85,22 +82,28 @@ rndr_indent(struct lowdown_buf *ob, size_t indent)
 static int
 rndr_short(struct lowdown_buf *ob, const struct lowdown_buf *b)
 {
-	size_t	 i;
+	size_t	 	 i;
+	unsigned char	 ch;
 
-	for (i = 0; i < 20 && i < b->size; i++)
-		if (b->data[i] == '\n') {
+	for (i = 0; i < 20 && i < b->size; i++) {
+		ch = (unsigned char)b->data[i];
+		if (ch == '\n') {
 			if (!HBUF_PUTSL(ob, "\\n"))
 				return 0;
-		} else if (b->data[i] == '\t') {
+		} else if (ch == '\r') {
+			if (!HBUF_PUTSL(ob, "\\r"))
+				return 0;
+		} else if (ch == '\t') {
 			if (!HBUF_PUTSL(ob, "\\t"))
 				return 0;
-		} else if (iscntrl((unsigned char)b->data[i])) {
+		} else if (ch < 0x80 && iscntrl(ch)) {
 			if (!hbuf_putc(ob, '?'))
 				return 0;
 		} else {
 			if (!hbuf_putc(ob, b->data[i]))
 				return 0;
 		}
+	}
 
 	if (i < b->size && !HBUF_PUTSL(ob, "..."))
 		return 0;
@@ -108,7 +111,7 @@ rndr_short(struct lowdown_buf *ob, const struct lowdown_buf *b)
 }
 
 static int
-rndr(struct lowdown_buf *ob,
+rndr(struct lowdown_buf *ob, struct lowdown_metaq *mq,
 	const struct lowdown_node *root, size_t indent)
 {
 	const struct lowdown_node	*n;
@@ -122,7 +125,7 @@ rndr(struct lowdown_buf *ob,
 	if (root->chng == LOWDOWN_CHNG_DELETE && 
 	    !HBUF_PUTSL(ob, "DELETE: "))
 		return 0;
-	if (!hbuf_puts(ob, names[root->type]))
+	if (!hbuf_printf(ob, "%s (%zu)", names[root->type], root->id))
 		return 0;
 	if (!hbuf_putc(ob, '\n'))
 		return 0;
@@ -203,6 +206,26 @@ rndr(struct lowdown_buf *ob,
 			if (!HBUF_PUTSL(ob, "\n"))
 				return 0;
 		}
+		if (root->rndr_image.attr_cls.size > 0) {
+			if (!rndr_indent(ob, indent + 1))
+				return 0;
+			if (!HBUF_PUTSL(ob, "class: "))
+				return 0;
+			if (!hbuf_putb(ob, &root->rndr_image.attr_cls))
+				return 0;
+			if (!HBUF_PUTSL(ob, "\n"))
+				return 0;
+		}
+		if (root->rndr_image.attr_id.size > 0) {
+			if (!rndr_indent(ob, indent + 1))
+				return 0;
+			if (!HBUF_PUTSL(ob, "id: "))
+				return 0;
+			if (!hbuf_putb(ob, &root->rndr_image.attr_id))
+				return 0;
+			if (!HBUF_PUTSL(ob, "\n"))
+				return 0;
+		}
 		break;
 	case LOWDOWN_HEADER:
 		if (!rndr_indent(ob, indent + 1))
@@ -210,36 +233,26 @@ rndr(struct lowdown_buf *ob,
 		if (!hbuf_printf(ob, "level: %zu\n",
 		    root->rndr_header.level))
 			return 0;
-		break;
-	case LOWDOWN_FOOTNOTE_REF:
-		if (!rndr_indent(ob, indent + 1))
-			return 0;
-		if (!hbuf_printf(ob, "number: %zu\n",
-		    root->rndr_footnote_ref.num))
-			return 0;
-		if (!rndr_indent(ob, indent + 1))
-			return 0;
-		if (!hbuf_printf(ob, "name: "))
-			return 0;
-		if (!rndr_short(ob, &root->rndr_footnote_ref.key))
-			return 0;
-		if (!HBUF_PUTSL(ob, "\n"))
-			return 0;
-		break;
-	case LOWDOWN_FOOTNOTE_DEF:
-		if (!rndr_indent(ob, indent + 1))
-			return 0;
-		if (!hbuf_printf(ob, "number: %zu\n",
-		    root->rndr_footnote_def.num))
-			return 0;
-		if (!rndr_indent(ob, indent + 1))
-			return 0;
-		if (!hbuf_printf(ob, "name: "))
-			return 0;
-		if (!rndr_short(ob, &root->rndr_footnote_def.key))
-			return 0;
-		if (!HBUF_PUTSL(ob, "\n"))
-			return 0;
+		if (root->rndr_header.attr_cls.size > 0) {
+			if (!rndr_indent(ob, indent + 1))
+				return 0;
+			if (!HBUF_PUTSL(ob, "class: "))
+				return 0;
+			if (!hbuf_putb(ob, &root->rndr_header.attr_cls))
+				return 0;
+			if (!HBUF_PUTSL(ob, "\n"))
+				return 0;
+		}
+		if (root->rndr_header.attr_id.size > 0) {
+			if (!rndr_indent(ob, indent + 1))
+				return 0;
+			if (!HBUF_PUTSL(ob, "id: "))
+				return 0;
+			if (!hbuf_putb(ob, &root->rndr_header.attr_id))
+				return 0;
+			if (!HBUF_PUTSL(ob, "\n"))
+				return 0;
+		}
 		break;
 	case LOWDOWN_RAW_HTML:
 		if (!rndr_indent(ob, indent + 1))
@@ -261,6 +274,20 @@ rndr(struct lowdown_buf *ob,
 		if (!rndr_short(ob, &root->rndr_blockhtml.text))
 			return 0;
 		if (!HBUF_PUTSL(ob, "\n"))
+			return 0;
+		break;
+	case LOWDOWN_BLOCKQUOTE:
+		if (root->rndr_blockquote.type == BLOCKQUOTE_REGULAR)
+			break;
+		if (!rndr_indent(ob, indent + 1))
+			return 0;
+		if (!hbuf_printf(ob, "admonition (%s): %s\n",
+		    root->rndr_blockquote.type == BLOCKQUOTE_ADMONITION ?
+		    "single-line" : "double-line",
+		    root->rndr_blockquote.admonition == ADMONITION_NOTE ?
+		    "note" :
+		    root->rndr_blockquote.admonition == ADMONITION_WARNING ?
+		    "warning" : "callout"))
 			return 0;
 		break;
 	case LOWDOWN_BLOCKCODE:
@@ -320,8 +347,15 @@ rndr(struct lowdown_buf *ob,
 		    HLIST_FL_ORDERED & root->rndr_list.flags ? 
 		    "ordered" : "unordered"))
 			return 0;
+		if (!rndr_indent(ob, indent + 1))
+			return 0;
+		if (!hbuf_printf(ob, "list items: %zu\n",
+		    root->rndr_list.items))
+			return 0;
 		break;
 	case LOWDOWN_META:
+		if (lowdown_get_meta(root, mq) == NULL)
+			return 0;
 		if (!rndr_indent(ob, indent + 1))
 			return 0;
 		if (!hbuf_printf(ob, "key: "))
@@ -391,6 +425,26 @@ rndr(struct lowdown_buf *ob,
 			if (!HBUF_PUTSL(ob, "\n"))
 				return 0;
 		}
+		if (root->rndr_link.attr_cls.size > 0) {
+			if (!rndr_indent(ob, indent + 1))
+				return 0;
+			if (!HBUF_PUTSL(ob, "class: "))
+				return 0;
+			if (!hbuf_putb(ob, &root->rndr_link.attr_cls))
+				return 0;
+			if (!HBUF_PUTSL(ob, "\n"))
+				return 0;
+		}
+		if (root->rndr_link.attr_id.size > 0) {
+			if (!rndr_indent(ob, indent + 1))
+				return 0;
+			if (!HBUF_PUTSL(ob, "id: "))
+				return 0;
+			if (!hbuf_putb(ob, &root->rndr_link.attr_id))
+				return 0;
+			if (!HBUF_PUTSL(ob, "\n"))
+				return 0;
+		}
 		break;
 	case LOWDOWN_NORMAL_TEXT:
 		if (!rndr_indent(ob, indent + 1))
@@ -411,7 +465,7 @@ rndr(struct lowdown_buf *ob,
 		return 0;
 
 	TAILQ_FOREACH(n, &root->children, entries)
-		if (!rndr(tmp, n, indent + 1)) {
+		if (!rndr(tmp, mq, n, indent + 1)) {
 			hbuf_free(tmp);
 			return 0;
 		}
@@ -423,9 +477,66 @@ rndr(struct lowdown_buf *ob,
 
 int
 lowdown_tree_rndr(struct lowdown_buf *ob,
-	const struct lowdown_node *root)
+	const struct lowdown_node *root,
+	const struct lowdown_opts *opts)
 {
+	struct lowdown_buf	*obtmp = NULL, *mqtmp = NULL;
+	struct lowdown_metaq	 mq;
+	struct lowdown_meta	*m;
+	int			 rc = 0;
+	size_t			 init_depth = 0;
 
-	return rndr(ob, root, 0);
+	TAILQ_INIT(&mq);
+
+	if ((obtmp = hbuf_new(64)) == NULL)
+		goto out;
+	if ((mqtmp = hbuf_new(64)) == NULL)
+		goto out;
+
+	/*
+	 * Output the parsed document into obtmp, with optional envelope
+	 * in standalone mode.
+	 */
+
+	if (opts != NULL && (opts->oflags & LOWDOWN_STANDALONE)) {
+		init_depth = 1;
+		if (!HBUF_PUTSL(obtmp, "document:\n"))
+			goto out;
+	}
+	if (!rndr(obtmp, &mq, root, init_depth))
+		goto out;
+
+	/* Optionally output the parsed metadata into mqtmp. */
+
+	if (opts != NULL && (opts->oflags & LOWDOWN_STANDALONE)) {
+		if (!HBUF_PUTSL(mqtmp, "metadata:\n"))
+			return 0;
+		TAILQ_FOREACH(m, &mq, entries)
+			if (!hbuf_printf(mqtmp, "  %s: %s\n", m->key,
+			    m->value))
+				return 0;
+	}
+
+	/*
+	 * If a template has been provided in standalone mode, print
+	 * that after the body and metadata.  Otherwise, directly print
+	 * the body (and optional metadata).
+	 */
+
+	if (opts != NULL && opts->templ != NULL &&
+	    (opts->oflags & LOWDOWN_STANDALONE)) {
+		if (!(hbuf_putb(ob, obtmp) && hbuf_putb(ob, mqtmp)))
+			return 0;
+		if (!HBUF_PUTSL(ob, "template:\n"))
+			return 0;
+		rc = lowdown_template(opts->templ, obtmp, ob, &mq, 1);
+	} else
+		rc = hbuf_putb(ob, obtmp) && hbuf_putb(ob, mqtmp);
+
+out:
+	lowdown_metaq_free(&mq);
+	hbuf_free(obtmp);
+	hbuf_free(mqtmp);
+	return rc;
 }
 

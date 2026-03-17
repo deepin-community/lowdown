@@ -1,0 +1,2 @@
+# source is shipped alongside the HTML, and compared for regression testing
+lowdown source: source-is-missing [regress/diff/diff.html]

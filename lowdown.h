@@ -1,6 +1,5 @@
-/*	$Id$ */
 /*
- * Copyright (c) 2017--2021 Kristaps Dzonsons <kristaps@bsd.lv>
+ * Copyright (c) Kristaps Dzonsons <kristaps@bsd.lv>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -16,6 +15,10 @@
  */
 #ifndef LOWDOWN_H
 #define LOWDOWN_H
+/*
+ * The only visible symbols should be those in this header file.
+ */
+#pragma GCC visibility push(default)
 
 /*
  * All of this is documented in lowdown.3.
@@ -52,9 +55,6 @@ enum	lowdown_type {
 	LOWDOWN_NULL
 };
 
-/*
- * All types of Markdown nodes that lowdown understands.
- */
 enum	lowdown_rndrt {
 	LOWDOWN_ROOT,
 	LOWDOWN_BLOCKCODE,
@@ -72,8 +72,6 @@ enum	lowdown_rndrt {
 	LOWDOWN_TABLE_BODY,
 	LOWDOWN_TABLE_ROW,
 	LOWDOWN_TABLE_CELL,
-	LOWDOWN_FOOTNOTES_BLOCK,
-	LOWDOWN_FOOTNOTE_DEF,
 	LOWDOWN_BLOCKHTML,
 	LOWDOWN_LINK_AUTO,
 	LOWDOWN_CODESPAN,
@@ -85,15 +83,15 @@ enum	lowdown_rndrt {
 	LOWDOWN_LINK,
 	LOWDOWN_TRIPLE_EMPHASIS,
 	LOWDOWN_STRIKETHROUGH,
+	LOWDOWN_SUBSCRIPT,
 	LOWDOWN_SUPERSCRIPT,
-	LOWDOWN_FOOTNOTE_REF,
+	LOWDOWN_FOOTNOTE,
 	LOWDOWN_MATH_BLOCK,
 	LOWDOWN_RAW_HTML,
 	LOWDOWN_ENTITY,
 	LOWDOWN_NORMAL_TEXT,
 	LOWDOWN_DOC_HEADER,
 	LOWDOWN_META,
-	LOWDOWN_DOC_FOOTER,
 	LOWDOWN__MAX
 };
 
@@ -115,10 +113,23 @@ enum 	htbl_flags {
 	HTBL_FL_HEADER = 4
 };
 
+enum	admonition_type {
+	ADMONITION_NONE,
+	ADMONITION_NOTE,
+	ADMONITION_CALLOUT,
+	ADMONITION_WARNING,
+};
+
+enum 	blockquote_type {
+	BLOCKQUOTE_REGULAR,
+	BLOCKQUOTE_ADMONITION,
+	BLOCKQUOTE_ADMONITION_BLOCK
+};
+
 enum 	halink_type {
 	HALINK_NONE, /* used internally when it is not an autolink */
-	HALINK_NORMAL, /* normal http/http/ftp/mailto/etc link */
-	HALINK_EMAIL /* e-mail link without explit mailto: */
+	HALINK_NORMAL,
+	HALINK_EMAIL
 };
 
 enum	hlist_fl {
@@ -128,6 +139,7 @@ enum	hlist_fl {
 	HLIST_FL_DEF = (1 << 3), /* <dl> list item */
 	HLIST_FL_CHECKED = (1 << 4), /* <li> with checked box */
 	HLIST_FL_UNCHECKED = (1 << 5), /* <li> with unchecked box */
+	HLIST_FL_SEMIBLOCK = (1 << 6), /* TODO */
 };
 
 /*
@@ -153,25 +165,27 @@ struct	rndr_meta {
 };
 
 struct	rndr_paragraph {
-	size_t lines; /* input lines */
-	int beoln; /* ends on blank line */
+	size_t lines;
+	int beoln;
 };
 
 struct	rndr_normal_text {
-	struct lowdown_buf text; /* basic text */
+	int		   flags;
+#define	HTEXT_ESCAPED	   0x01
+	struct lowdown_buf text;
 };
 
 struct	rndr_entity {
-	struct lowdown_buf text; /* entity text */
+	struct lowdown_buf text;
 };
 
 struct	rndr_autolink {
-	struct lowdown_buf link; /* link address */
-	enum halink_type type; /* type of link */
+	struct lowdown_buf link;
+	enum halink_type type;
 };
 
 struct	rndr_raw_html {
-	struct lowdown_buf text; /* raw html buffer */
+	struct lowdown_buf text;
 };
 
 struct	rndr_link {
@@ -182,8 +196,13 @@ struct	rndr_link {
 };
 
 struct	rndr_blockcode {
-	struct lowdown_buf text; /* raw code buffer */
-	struct lowdown_buf lang; /* fence language */
+	struct lowdown_buf text;
+	struct lowdown_buf lang;
+};
+
+struct	rndr_blockquote {
+	enum blockquote_type type;
+	enum admonition_type admonition;
 };
 
 struct	rndr_definition {
@@ -191,7 +210,7 @@ struct	rndr_definition {
 };
 
 struct	rndr_codespan {
-	struct lowdown_buf text; /* raw code buffer */
+	struct lowdown_buf text;
 };
 
 struct	rndr_table{
@@ -209,17 +228,6 @@ struct	rndr_table_cell {
 	size_t columns;
 };
 
-struct	rndr_footnote_def {
-	size_t num;
-	struct lowdown_buf key;
-};
-
-struct	rndr_footnote_ref {
-	size_t num;
-	struct lowdown_buf def;
-	struct lowdown_buf key;
-};
-
 struct	rndr_blockhtml {
 	struct lowdown_buf text;
 };
@@ -227,6 +235,7 @@ struct	rndr_blockhtml {
 struct	rndr_list {
 	enum hlist_fl flags;
 	size_t start;
+	size_t items;
 };
 
 struct	rndr_listitem {
@@ -235,7 +244,9 @@ struct	rndr_listitem {
 };
 
 struct	rndr_header{
-	size_t level; /* hN level */
+	size_t level;
+	struct lowdown_buf attr_cls;
+	struct lowdown_buf attr_id;
 };
 
 struct	rndr_image {
@@ -250,7 +261,7 @@ struct	rndr_image {
 };
 
 struct rndr_math {
-	struct lowdown_buf text; /* equation (opaque) */
+	struct lowdown_buf text;
 	int blockmode;
 };
 
@@ -274,13 +285,12 @@ struct	lowdown_node {
 		struct rndr_raw_html rndr_raw_html; 
 		struct rndr_link rndr_link; 
 		struct rndr_blockcode rndr_blockcode; 
+		struct rndr_blockquote rndr_blockquote;
 		struct rndr_definition rndr_definition; 
 		struct rndr_codespan rndr_codespan; 
 		struct rndr_table rndr_table; 
 		struct rndr_table_header rndr_table_header; 
 		struct rndr_table_cell rndr_table_cell; 
-		struct rndr_footnote_def rndr_footnote_def;
-		struct rndr_footnote_ref rndr_footnote_ref;
 		struct rndr_image rndr_image;
 		struct rndr_math rndr_math;
 		struct rndr_blockhtml rndr_blockhtml;
@@ -290,15 +300,34 @@ struct	lowdown_node {
 	TAILQ_ENTRY(lowdown_node) entries;
 };
 
-/*
- * These options contain everything needed to parse and render content.
- */
+struct	lowdown_opts_odt {
+	const char		*sty;
+};
+
+struct	lowdown_opts_nroff {
+	const char		*cr;
+	const char		*cb;
+	const char		*ci;
+	const char		*cbi;
+};
+
+struct	lowdown_opts_term {
+	size_t			 cols;
+	size_t			 width;
+	size_t			 hmargin;
+	size_t			 hpadding;
+	size_t			 vmargin;
+	int			 centre;
+};
+
 struct	lowdown_opts {
 	enum lowdown_type	  type;
-	size_t			  maxdepth; /* max parse tree depth */
-	size_t			  cols; /* -Tterm width */
-	size_t			  hmargin; /* -Tterm left margin */
-	size_t			  vmargin; /* -Tterm top/bot margin */
+	union {
+		struct lowdown_opts_odt odt;
+		struct lowdown_opts_nroff nroff;
+		struct lowdown_opts_term term;
+	};
+	size_t			  maxdepth;
 	unsigned int		  feat;
 #define LOWDOWN_TABLES		  0x01
 #define LOWDOWN_FENCED		  0x02
@@ -319,37 +348,46 @@ struct	lowdown_opts {
 #define	LOWDOWN_IMG_EXT	 	  0x20000 /* -> LOWDOWN_ATTRS */
 #define LOWDOWN_TASKLIST	  0x40000
 #define LOWDOWN_ATTRS		  0x80000
+#define	LOWDOWN_MANTITLE	  0x100000
+#define LOWDOWN_CALLOUTS	  0x200000
+#define LOWDOWN_SUPER_SHORT	  0x400000
 	unsigned int		  oflags;
-#define	LOWDOWN_GEMINI_LINK_END	  0x8000 /* links at end */
-#define	LOWDOWN_GEMINI_LINK_IN	  0x10000 /* links inline */
-#define	LOWDOWN_GEMINI_LINK_NOREF 0x200000 /* for !inline, no names */
-#define	LOWDOWN_GEMINI_LINK_ROMAN 0x400000 /* roman link names */
-#define	LOWDOWN_HTML_NUM_ENT	  0x1000 /* use &#nn; if possible */
-#define	LOWDOWN_HTML_OWASP	  0x800 /* use OWASP escaping */
-#define	LOWDOWN_ODT_SKIP_HTML	  0x2000000 /* skip all HTML */
-#define	LOWDOWN_SMARTY	  	  0x40 /* smart typography */
-#define	LOWDOWN_TERM_NOANSI	  0x1000000 /* no ANSI escapes at all */
-#define	LOWDOWN_TERM_NOCOLOUR	  0x800000 /* no ANSI colours */
-#define LOWDOWN_GEMINI_METADATA	  0x100000 /* show metadata */
+#define LOWDOWN_HTML_SKIP_HTML	  0x01 /* skip all HTML */
 #define LOWDOWN_HTML_ESCAPE	  0x02 /* escape HTML (if not skip) */
 #define LOWDOWN_HTML_HARD_WRAP	  0x04 /* paragraph line breaks */
-#define LOWDOWN_HTML_HEAD_IDS	  0x100 /* <hN id="the_name"> */
-#define LOWDOWN_HTML_SKIP_HTML	  0x01 /* skip all HTML */
-#define LOWDOWN_LATEX_NUMBERED	  0x4000 /* numbered sections */
-#define LOWDOWN_LATEX_SKIP_HTML	  0x2000 /* skip all HTML */
-#define LOWDOWN_NROFF_GROFF	  0x20 /* use groff extensions */
-/* Disable LOWDOWN_NROFF_HARD_WRAP 0x10 */
-#define LOWDOWN_NROFF_NOLINK	  0x80000 /* don't show URLs */
-#define LOWDOWN_NROFF_NUMBERED	  0x80 /* numbered section headers */
-#define LOWDOWN_NROFF_SHORTLINK	  0x40000 /* shorten URLs */
 #define LOWDOWN_NROFF_SKIP_HTML	  0x08 /* skip all HTML */
+#define LOWDOWN_TERM_NORELLINK	  0x10 /* don't show relative links */
+#define LOWDOWN_NROFF_GROFF	  0x20 /* use groff extensions */
+#define	LOWDOWN_SMARTY	  	  0x40 /* smart typography */
+#define LOWDOWN_NROFF_NUMBERED	  0x80 /* numbered section headers */
+#define LOWDOWN_HTML_HEAD_IDS	  0x100 /* <hN id="the_name"> */
 #define LOWDOWN_STANDALONE	  0x200 /* emit complete document */
-#define LOWDOWN_TERM_NOLINK	  0x20000 /* don't show URLs */
 #define LOWDOWN_TERM_SHORTLINK	  0x400 /* shorten URLs */
+#define	LOWDOWN_HTML_OWASP	  0x800 /* use OWASP escaping */
+#define	LOWDOWN_HTML_NUM_ENT	  0x1000 /* use &#nn; if possible */
+#define LOWDOWN_LATEX_SKIP_HTML	  0x2000 /* skip all HTML */
+#define LOWDOWN_LATEX_NUMBERED	  0x4000 /* numbered sections */
+#define	LOWDOWN_GEMINI_LINK_END	  0x8000 /* links at end */
+#define	LOWDOWN_GEMINI_LINK_IN	  0x10000 /* links inline */
+#define LOWDOWN_TERM_NOLINK	  0x20000 /* don't show URLs */
+#define LOWDOWN_NROFF_SHORTLINK	  0x40000 /* shorten URLs */
+#define LOWDOWN_NROFF_NOLINK	  0x80000 /* don't show URLs */
+#define LOWDOWN_GEMINI_METADATA	  0x100000 /* show metadata */
+#define	LOWDOWN_GEMINI_LINK_NOREF 0x200000 /* for !inline, no names */
+#define	LOWDOWN_GEMINI_LINK_ROMAN 0x400000 /* roman link names */
+#define	LOWDOWN_TERM_NOCOLOUR	  0x800000 /* no ANSI colours */
+#define	LOWDOWN_TERM_NOANSI	  0x1000000 /* no ANSI escapes at all */
+#define	LOWDOWN_ODT_SKIP_HTML	  0x2000000 /* skip all HTML */
+#define	LOWDOWN_HTML_TITLEBLOCK	  0x4000000 /* output title block */
+#define LOWDOWN_HTML_CALLOUT_GFM  0x8000000 /* GFM callouts */
+#define LOWDOWN_HTML_CALLOUT_MDN  0x10000000 /* MDN callouts */
+#define LOWDOWN_TERM_ALL_META	  0x20000000 /* show all metadata */
+#define LOWDOWN_NROFF_ENDNOTES	  0x40000000 /* endnotes for -tms */
 	char			**meta;
 	size_t			  metasz;
 	char			**metaovr;
 	size_t			  metaovrsz;
+	const char		 *templ;
 };
 
 struct lowdown_doc;
@@ -416,7 +454,8 @@ int 	 lowdown_nroff_rndr(struct lowdown_buf *, void *,
 		const struct lowdown_node *);
 
 int 	 lowdown_tree_rndr(struct lowdown_buf *, 
-		const struct lowdown_node *);
+		const struct lowdown_node *,
+		const struct lowdown_opts *);
 
 void	 lowdown_latex_free(void *);
 void	*lowdown_latex_new(const struct lowdown_opts *);
@@ -430,4 +469,5 @@ int 	 lowdown_odt_rndr(struct lowdown_buf *, void *,
 
 __END_DECLS
 
+#pragma GCC visibility pop /* visibility(default) */
 #endif /* !LOWDOWN_H */
