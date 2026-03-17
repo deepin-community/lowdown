@@ -1,6 +1,4 @@
-.\"	$Id$
-.\"
-.\" Copyright (c) 2017--2021 Kristaps Dzonsons <kristaps@bsd.lv>
+.\" Copyright (c) Kristaps Dzonsons <kristaps@bsd.lv>
 .\"
 .\" Permission to use, copy, modify, and distribute this software for any
 .\" purpose with or without fee is hereby granted, provided that the above
@@ -51,6 +49,7 @@ and must be freed with
 The bits recognised in
 .Fa opts->oflags
 are
+.Dv LOWDOWN_NROFF_ENDNOTES ,
 .Dv LOWDOWN_NROFF_GROFF ,
 .Dv LOWDOWN_NROFF_NOLINK ,
 .Dv LOWDOWN_NROFF_NUMBERED ,
@@ -85,6 +84,26 @@ mode, GNU extensions to
 are used along with
 .Ar mspdf .
 These are only supported by groff.
+.Pp
+.Dv LOWDOWN_NROFF_ENDNOTES
+delays printing of footnotes until the end of a document.
+Does not affect
+.Dv LOWDOWN_MAN
+documents, which structurally only supports endnotes.
+.Pp
+The allocated rendered will use constant-width fonts
+.Qq CR
+.Pq regular ,
+.Qq CB
+.Pq bold ,
+.Qq CI
+.Pq italic ,
+and
+.Qq CBI
+.Pq bold-italic .
+Override the defaults with variables in the
+.Vt "struct lowdown_opts_nroff"
+structure.
 .Sh RETURN VALUES
 Returns a pointer to the renderer or
 .Dv NULL
@@ -149,3 +168,7 @@ groff extensions described in
 .Qq Portable Document Format Publishing with GNU Troff
 by Keith Marshall.
 Neither are implemented in mandoc.
+.Sh CAVEATS
+The default constant-width fonts may not available for the formatter's
+output device (for example, the terminal).
+In this case, the formatter may raise a warning and ignore the font.

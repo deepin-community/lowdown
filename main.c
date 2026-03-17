@@ -1,6 +1,5 @@
-/*	$Id$ */
 /*
- * Copyright (c) 2016, 2017, 2020 Kristaps Dzonsons <kristaps@bsd.lv>
+ * Copyright (c) Kristaps Dzonsons <kristaps@bsd.lv>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -25,12 +24,14 @@
 # include <sys/capsicum.h>
 #endif
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 
 #include <assert.h>
 #if HAVE_ERR
 # include <err.h>
 #endif
 #include <errno.h>
+#include <fcntl.h>
 #include <getopt.h>
 #include <limits.h> /* INT_MAX */
 #include <locale.h> /* set_locale() */
@@ -41,7 +42,9 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <termios.h> /* struct winsize */
+#if HAVE_TERMIOS
+# include <termios.h> /* struct winsize */
+#endif
 #include <unistd.h>
 
 #include "lowdown.h"
@@ -78,11 +81,33 @@ sandbox_post(int fdin, int fddin, int fdout)
 	char	*ep;
 	int	 rc;
 
-	rc = sandbox_init
-		(kSBXProfilePureComputation,
-		 SANDBOX_NAMED, &ep);
-	if (rc != 0)
-		errx(1, "sandbox_init: %s", ep);
+	rc = sandbox_init(kSBXProfilePureComputation, SANDBOX_NAMED,
+		&ep);
+	if (rc == 0)
+		return;
+
+#ifdef SANDBOX_INIT_ERROR_IGNORE
+#warning Allowing sandbox_init() to ignore errors
+	/*
+	 * sandbox_init() will fail if invoked within an existing
+	 * sandbox due to its poor design.
+	 *
+	 * If the system is compiled with SANDBOX_INIT_ERROR_IGNORE
+	 * and the SANDBOX_INIT_ERROR_IGNORE environment variable is
+	 * set, failure to create the sandbox will not cause the system
+	 * to fail.
+	 *
+	 * Alternatively, if SANDBOX_INIT_ERROR_IGNORE is 2, errors are
+	 * ignored all the time.
+	 */
+# if SANDBOX_INIT_ERROR_IGNORE == 2
+	return
+# else
+	if (getenv("SANDBOX_INIT_ERROR_IGNORE") != NULL)
+		return;
+# endif
+#endif
+	errx(1, "sandbox_init: %s", ep);
 }
 
 static void
@@ -131,9 +156,19 @@ sandbox_pre(void)
 	/* Do nothing. */
 }
 
-#else /* No sandbox. */
+#else /* No compile-time sandbox. */
 
-#warning Compiling without sandbox support.
+/*
+ * WebAssembly (WASI) is a virtual architecture, so it's "sandboxed" by
+ * default.  Since building WASI targets is now fairly common, we can
+ * specifically address this by not issuing the warning.  XXX: this
+ * special-cases this output, which is not something that I like, but
+ * until there are other platforms that are similarly
+ * sandboxed-by-default, will keep as-is.
+ */
+#ifndef __wasi__
+# warning Compiling without sandbox support.
+#endif
 
 static void
 sandbox_post(int fdin, int fddin, int fdout)
@@ -154,12 +189,15 @@ sandbox_pre(void)
 static size_t
 get_columns(void)
 {
+	size_t res = 72;
+#if HAVE_TERMIOS
 	struct winsize	 size;
 
 	memset(&size, 0, sizeof(struct winsize));
-	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == -1)
-		return 72;
-	return size.ws_col;
+	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) != -1)
+		res = size.ws_col;
+#endif
+	return res;
 }
 
 /*
@@ -203,6 +241,41 @@ metadata_parse(char opt, char ***vals, size_t *valsz, const char *arg)
 	errx(1, "-%c: malformed metadata", opt);
 }
 
+/*
+ * Read a full file into the NUL-terminated return pointer.  Exits on
+ * failure.
+ */
+static char *
+readfile(const char *fn)
+{
+	int	 	 fd;
+	struct stat	 st;
+	ssize_t		 ssz;
+	size_t		 sz;
+	char		*cp, *orig;
+
+	if ((fd = open(fn, O_RDONLY)) == -1)
+		err(1, "%s", fn);
+	if (fstat(fd, &st) == -1)
+		err(1, "%s", fn);
+	if ((uint64_t)st.st_size > SIZE_MAX - 1)
+		errx(1, "%s: file too long", fn);
+	sz = (size_t)st.st_size;
+	if ((cp = orig = malloc(sz + 1)) == NULL)
+		err(1, NULL);
+	while (sz > 0) {
+		if ((ssz = read(fd, cp, sz)) == -1)
+			err(1, "%s", fn);
+		if (ssz == 0)
+			errx(1, "%s: short file", fn);
+		sz -= (size_t)ssz;
+		cp += ssz;
+	}
+	*cp = '\0';
+	close(fd);
+	return orig;
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -210,110 +283,183 @@ main(int argc, char *argv[])
 				*din = NULL;
 	const char		*fnin = "<stdin>", *fnout = NULL,
 	      	 		*fndin = NULL, *extract = NULL, *er,
-				*mainopts = "M:m:sT:o:X:",
-	      			*diffopts = "M:m:sT:o:";
+				*mainopts = "LM:m:sT:t:o:X:h",
+				*diffopts = "M:m:sT:t:o:h",
+				*templfn = NULL, *odtstylefn = NULL;
+	struct lowdown_opts_term topts;
 	struct lowdown_opts 	 opts;
-	int			 c, diff = 0,
-				 status = 0, aoflag = 0, roflag = 0,
-				 aiflag = 0, riflag = 0, centre = 0;
-	char			*ret = NULL;
-	size_t		 	 i, retsz = 0, rcols;
+	int			 c, diff = 0, status = 1, afl = 0,
+				 rfl = 0, aifl = 0, rifl = 0, list = 0;
+	char			*ret = NULL, *cp, *templptr = NULL,
+				*nroffcodefn = NULL,
+				*odtstyleptr = NULL;
+	size_t		 	 i, retsz = 0;
 	struct lowdown_meta 	*m;
 	struct lowdown_metaq	 mq;
 	struct option 		 lo[] = {
-		{ "html-skiphtml",	no_argument,	&aoflag, LOWDOWN_HTML_SKIP_HTML },
-		{ "html-no-skiphtml",	no_argument,	&roflag, LOWDOWN_HTML_SKIP_HTML },
-		{ "html-escapehtml",	no_argument,	&aoflag, LOWDOWN_HTML_ESCAPE },
-		{ "html-no-escapehtml",	no_argument,	&roflag, LOWDOWN_HTML_ESCAPE },
-		{ "html-hardwrap",	no_argument,	&aoflag, LOWDOWN_HTML_HARD_WRAP },
-		{ "html-no-hardwrap",	no_argument,	&roflag, LOWDOWN_HTML_HARD_WRAP },
-		{ "html-head-ids",	no_argument,	&aoflag, LOWDOWN_HTML_HEAD_IDS },
-		{ "html-no-head-ids",	no_argument,	&roflag, LOWDOWN_HTML_HEAD_IDS },
-		{ "html-owasp",		no_argument,	&aoflag, LOWDOWN_HTML_OWASP },
-		{ "html-no-owasp",	no_argument,	&roflag, LOWDOWN_HTML_OWASP },
-		{ "html-num-ent",	no_argument,	&aoflag, LOWDOWN_HTML_NUM_ENT },
-		{ "html-no-num-ent",	no_argument,	&roflag, LOWDOWN_HTML_NUM_ENT },
-		{ "latex-numbered",	no_argument,	&aoflag, LOWDOWN_LATEX_NUMBERED },
-		{ "latex-no-numbered",	no_argument,	&roflag, LOWDOWN_LATEX_NUMBERED },
-		{ "latex-skiphtml",	no_argument,	&aoflag, LOWDOWN_LATEX_SKIP_HTML },
-		{ "latex-no-skiphtml",	no_argument,	&roflag, LOWDOWN_LATEX_SKIP_HTML },
-		{ "nroff-skiphtml",	no_argument,	&aoflag, LOWDOWN_NROFF_SKIP_HTML },
-		{ "nroff-no-skiphtml",	no_argument,	&roflag, LOWDOWN_NROFF_SKIP_HTML },
-		{ "nroff-groff",	no_argument,	&aoflag, LOWDOWN_NROFF_GROFF },
-		{ "nroff-no-groff",	no_argument,	&roflag, LOWDOWN_NROFF_GROFF },
-		{ "nroff-numbered",	no_argument,	&aoflag, LOWDOWN_NROFF_NUMBERED },
-		{ "nroff-no-numbered",	no_argument,	&roflag, LOWDOWN_NROFF_NUMBERED },
-		{ "nroff-shortlinks",	no_argument, 	&aoflag, LOWDOWN_NROFF_SHORTLINK },
-		{ "nroff-no-shortlinks",no_argument, 	&roflag, LOWDOWN_NROFF_SHORTLINK },
-		{ "nroff-nolinks",	no_argument, 	&aoflag, LOWDOWN_NROFF_NOLINK },
-		{ "nroff-no-nolinks",	no_argument, 	&roflag, LOWDOWN_NROFF_NOLINK },
-		{ "odt-skiphtml",	no_argument,	&aoflag, LOWDOWN_ODT_SKIP_HTML },
-		{ "odt-no-skiphtml",	no_argument,	&roflag, LOWDOWN_ODT_SKIP_HTML },
-		{ "term-width",		required_argument, NULL, 1 },
-		{ "term-hmargin",	required_argument, NULL, 2 },
-		{ "term-vmargin",	required_argument, NULL, 3 },
+		{ "template",		required_argument, NULL, 8 },
+		{ "version",		no_argument,	NULL, 10 },
+		{ "help",		no_argument,	NULL, 11 },
+		{ "out-no-smarty",	no_argument,	&rfl, LOWDOWN_SMARTY },
+		{ "out-standalone",	no_argument,	&afl, LOWDOWN_STANDALONE },
+
+		{ "html-no-escapehtml",	no_argument,	&rfl, LOWDOWN_HTML_ESCAPE },
+		{ "html-hardwrap",	no_argument,	&afl, LOWDOWN_HTML_HARD_WRAP },
+		{ "html-no-head-ids",	no_argument,	&rfl, LOWDOWN_HTML_HEAD_IDS },
+		{ "html-no-num-ent",	no_argument,	&rfl, LOWDOWN_HTML_NUM_ENT },
+		{ "html-no-owasp",	no_argument,	&rfl, LOWDOWN_HTML_OWASP },
+		{ "html-no-skiphtml",	no_argument,	&rfl, LOWDOWN_HTML_SKIP_HTML },
+		{ "html-titleblock",	no_argument,	&afl, LOWDOWN_HTML_TITLEBLOCK },
+		{ "html-callout-mdn",	no_argument,	&afl, LOWDOWN_HTML_CALLOUT_MDN },
+		{ "html-callout-gfm",	no_argument,	&afl, LOWDOWN_HTML_CALLOUT_GFM },
+
+		{ "latex-no-numbered",	no_argument,	&rfl, LOWDOWN_LATEX_NUMBERED },
+		{ "latex-no-skiphtml",	no_argument,	&rfl, LOWDOWN_LATEX_SKIP_HTML },
+
+		{ "roff-traditional",	no_argument,	&rfl, LOWDOWN_NROFF_GROFF },
+		{ "roff-no-links",	no_argument, 	&afl, LOWDOWN_NROFF_NOLINK },
+		{ "roff-no-numbered",	no_argument,	&rfl, LOWDOWN_NROFF_NUMBERED },
+		{ "roff-short-links",	no_argument, 	&afl, LOWDOWN_NROFF_SHORTLINK },
+		{ "roff-no-skiphtml",	no_argument,	&rfl, LOWDOWN_NROFF_SKIP_HTML },
+		{ "roff-endnotes",	no_argument,	&afl, LOWDOWN_NROFF_ENDNOTES },
+		{ "roff-code-font",	required_argument, NULL, 7 },
+
+		{ "odt-no-skiphtml",	no_argument,	&rfl, LOWDOWN_ODT_SKIP_HTML },
+		{ "odt-style",		required_argument, NULL, 6 },
+
+		{ "gemini-link-end",	no_argument, 	&afl, LOWDOWN_GEMINI_LINK_END },
+		{ "gemini-link-roman",	no_argument, 	&afl, LOWDOWN_GEMINI_LINK_ROMAN },
+		{ "gemini-link-noref",	no_argument, 	&afl, LOWDOWN_GEMINI_LINK_NOREF },
+		{ "gemini-link-inline",	no_argument, 	&afl, LOWDOWN_GEMINI_LINK_IN },
+		{ "gemini-metadata",	no_argument, 	&afl, LOWDOWN_GEMINI_METADATA },
+
+		{ "term-no-ansi",	no_argument, 	&afl, LOWDOWN_TERM_NOANSI },
+		{ "term-no-colour",	no_argument, 	&afl, LOWDOWN_TERM_NOCOLOUR },
+		{ "term-no-rellinks",	no_argument, 	&afl, LOWDOWN_TERM_NORELLINK },
+		{ "term-no-links",	no_argument, 	&afl, LOWDOWN_TERM_NOLINK },
+		{ "term-short-links",	no_argument, 	&afl, LOWDOWN_TERM_SHORTLINK },
+		{ "term-all-meta",	no_argument, 	&afl, LOWDOWN_TERM_ALL_META },
+		{ "term-all-metadata",	no_argument, 	&afl, LOWDOWN_TERM_ALL_META },
 		{ "term-columns",	required_argument, NULL, 4 },
-		{ "gemini-link-end",	no_argument, 	&aoflag, LOWDOWN_GEMINI_LINK_END },
-		{ "gemini-no-link-end",	no_argument, 	&roflag, LOWDOWN_GEMINI_LINK_END },
-		{ "gemini-link-roman",	no_argument, 	&aoflag, LOWDOWN_GEMINI_LINK_ROMAN },
-		{ "gemini-no-link-roman", no_argument, 	&roflag, LOWDOWN_GEMINI_LINK_ROMAN },
-		{ "gemini-link-noref",	no_argument, 	&aoflag, LOWDOWN_GEMINI_LINK_NOREF },
-		{ "gemini-no-link-noref", no_argument, 	&roflag, LOWDOWN_GEMINI_LINK_NOREF },
-		{ "gemini-link-inline",	no_argument, 	&aoflag, LOWDOWN_GEMINI_LINK_IN },
-		{ "gemini-no-link-inline",no_argument, 	&roflag, LOWDOWN_GEMINI_LINK_IN },
-		{ "gemini-metadata",	no_argument, 	&aoflag, LOWDOWN_GEMINI_METADATA },
-		{ "gemini-no-metadata",	no_argument, 	&roflag, LOWDOWN_GEMINI_METADATA },
-		{ "term-shortlinks",	no_argument, 	&aoflag, LOWDOWN_TERM_SHORTLINK },
-		{ "term-no-shortlinks",	no_argument, 	&roflag, LOWDOWN_TERM_SHORTLINK },
-		{ "term-nolinks",	no_argument, 	&aoflag, LOWDOWN_TERM_NOLINK },
-		{ "term-no-nolinks",	no_argument, 	&roflag, LOWDOWN_TERM_NOLINK },
-		{ "term-no-colour",	no_argument, 	&aoflag, LOWDOWN_TERM_NOCOLOUR },
-		{ "term-colour",	no_argument, 	&roflag, LOWDOWN_TERM_NOCOLOUR },
-		{ "term-no-ansi",	no_argument, 	&aoflag, LOWDOWN_TERM_NOANSI },
-		{ "term-ansi",		no_argument, 	&roflag, LOWDOWN_TERM_NOANSI },
-		{ "out-smarty",		no_argument,	&aoflag, LOWDOWN_SMARTY },
-		{ "out-no-smarty",	no_argument,	&roflag, LOWDOWN_SMARTY },
-		{ "out-standalone",	no_argument,	&aoflag, LOWDOWN_STANDALONE },
-		{ "out-no-standalone",	no_argument,	&roflag, LOWDOWN_STANDALONE },
-		{ "parse-hilite",	no_argument,	&aiflag, LOWDOWN_HILITE },
-		{ "parse-no-hilite",	no_argument,	&riflag, LOWDOWN_HILITE },
-		{ "parse-tables",	no_argument,	&aiflag, LOWDOWN_TABLES },
-		{ "parse-no-tables",	no_argument,	&riflag, LOWDOWN_TABLES },
-		{ "parse-fenced",	no_argument,	&aiflag, LOWDOWN_FENCED },
-		{ "parse-no-fenced",	no_argument,	&riflag, LOWDOWN_FENCED },
-		{ "parse-footnotes",	no_argument,	&aiflag, LOWDOWN_FOOTNOTES },
-		{ "parse-no-footnotes",	no_argument,	&riflag, LOWDOWN_FOOTNOTES },
-		{ "parse-autolink",	no_argument,	&aiflag, LOWDOWN_AUTOLINK },
-		{ "parse-no-autolink",	no_argument,	&riflag, LOWDOWN_AUTOLINK },
-		{ "parse-strike",	no_argument,	&aiflag, LOWDOWN_STRIKE },
-		{ "parse-no-strike",	no_argument,	&riflag, LOWDOWN_STRIKE },
-		{ "parse-super",	no_argument,	&aiflag, LOWDOWN_SUPER },
-		{ "parse-no-super",	no_argument,	&riflag, LOWDOWN_SUPER },
-		{ "parse-math",		no_argument,	&aiflag, LOWDOWN_MATH },
-		{ "parse-no-math",	no_argument,	&riflag, LOWDOWN_MATH },
-		{ "parse-codeindent",	no_argument,	&riflag, LOWDOWN_NOCODEIND },
-		{ "parse-no-codeindent",no_argument,	&aiflag, LOWDOWN_NOCODEIND },
-		{ "parse-intraemph",	no_argument,	&riflag, LOWDOWN_NOINTEM },
-		{ "parse-no-intraemph",	no_argument,	&aiflag, LOWDOWN_NOINTEM },
-		{ "parse-metadata",	no_argument,	&aiflag, LOWDOWN_METADATA },
-		{ "parse-no-metadata",	no_argument,	&riflag, LOWDOWN_METADATA },
-		{ "parse-cmark",	no_argument,	&aiflag, LOWDOWN_COMMONMARK },
-		{ "parse-no-cmark",	no_argument,	&riflag, LOWDOWN_COMMONMARK },
-		{ "parse-deflists",	no_argument,	&aiflag, LOWDOWN_DEFLIST },
-		{ "parse-no-deflists",	no_argument,	&riflag, LOWDOWN_DEFLIST },
-		{ "parse-img-ext",	no_argument,	&aiflag, LOWDOWN_IMG_EXT }, /* TODO: remove */
-		{ "parse-no-img-ext",	no_argument,	&riflag, LOWDOWN_IMG_EXT }, /* TODO: remove */
-		{ "parse-ext-attrs",	no_argument,	&aiflag, LOWDOWN_ATTRS },
-		{ "parse-no-ext-attrs",	no_argument,	&riflag, LOWDOWN_ATTRS },
-		{ "parse-tasklists",	no_argument,	&aiflag, LOWDOWN_TASKLIST },
-		{ "parse-no-tasklists",	no_argument,	&riflag, LOWDOWN_TASKLIST },
+		{ "term-hmargin",	required_argument, NULL, 2 },
+		{ "term-hpadding",	required_argument, NULL, 9 },
+		{ "term-vmargin",	required_argument, NULL, 3 },
+		{ "term-width",		required_argument, NULL, 1 },
+
+		{ "parse-hilite",	no_argument,	&aifl, LOWDOWN_HILITE },
+		{ "parse-no-tables",	no_argument,	&rifl, LOWDOWN_TABLES },
+		{ "parse-no-fenced",	no_argument,	&rifl, LOWDOWN_FENCED },
+		{ "parse-no-footnotes",	no_argument,	&rifl, LOWDOWN_FOOTNOTES },
+		{ "parse-no-autolink",	no_argument,	&rifl, LOWDOWN_AUTOLINK },
+		{ "parse-no-strike",	no_argument,	&rifl, LOWDOWN_STRIKE },
+		{ "parse-no-super",	no_argument,	&rifl, LOWDOWN_SUPER },
+		{ "parse-super-short",	no_argument,	&aifl, LOWDOWN_SUPER_SHORT },
+		{ "parse-math",		no_argument,	&aifl, LOWDOWN_MATH },
+		{ "parse-no-mantitle",	no_argument,	&rifl, LOWDOWN_MANTITLE },
+		{ "parse-no-codeindent",no_argument,	&aifl, LOWDOWN_NOCODEIND },
+		{ "parse-no-intraemph",	no_argument,	&aifl, LOWDOWN_NOINTEM },
+		{ "parse-no-metadata",	no_argument,	&rifl, LOWDOWN_METADATA },
+		{ "parse-no-cmark",	no_argument,	&rifl, LOWDOWN_COMMONMARK },
+		{ "parse-no-deflists",	no_argument,	&rifl, LOWDOWN_DEFLIST },
+		/* TODO: remove these... */
+		{ "parse-no-img-ext",	no_argument,	&rifl, LOWDOWN_IMG_EXT },
+		{ "parse-no-ext-attrs",	no_argument,	&rifl, LOWDOWN_ATTRS },
+		{ "parse-no-tasklists",	no_argument,	&rifl, LOWDOWN_TASKLIST },
+		{ "parse-no-callouts",	no_argument,	&rifl, LOWDOWN_CALLOUTS },
 		{ "parse-maxdepth",	required_argument, NULL, 5 },
+
+		/*
+		 * What follows are options that are deprecated.  These
+		 * are still accepted, but are not documented.
+		 */
+
+		/*
+		 * Deprecated "nroff" prefix: lowdown moved from
+		 * --nroff-xyz to --roff-xyz in 1.4.0.
+		 */
+
+		{ "nroff-traditional",	no_argument,	&rfl, LOWDOWN_NROFF_GROFF },
+		{ "nroff-no-traditional",no_argument,	&afl, LOWDOWN_NROFF_GROFF },
+		{ "nroff-no-groff",	no_argument,	&rfl, LOWDOWN_NROFF_GROFF },
+		{ "nroff-groff",	no_argument,	&afl, LOWDOWN_NROFF_GROFF },
+		{ "nroff-nolinks",	no_argument, 	&afl, LOWDOWN_NROFF_NOLINK },
+		{ "nroff-no-nolinks",	no_argument, 	&rfl, LOWDOWN_NROFF_NOLINK },
+		{ "nroff-numbered",	no_argument,	&afl, LOWDOWN_NROFF_NUMBERED },
+		{ "nroff-no-numbered",	no_argument,	&rfl, LOWDOWN_NROFF_NUMBERED },
+		{ "nroff-shortlinks",	no_argument, 	&afl, LOWDOWN_NROFF_SHORTLINK },
+		{ "nroff-no-shortlinks",no_argument, 	&rfl, LOWDOWN_NROFF_SHORTLINK },
+		{ "nroff-skiphtml",	no_argument,	&afl, LOWDOWN_NROFF_SKIP_HTML },
+		{ "nroff-no-skiphtml",	no_argument,	&rfl, LOWDOWN_NROFF_SKIP_HTML },
+		{ "nroff-endnotes",	no_argument,	&afl, LOWDOWN_NROFF_ENDNOTES },
+		{ "nroff-no-endnotes",	no_argument,	&rfl, LOWDOWN_NROFF_ENDNOTES },
+		{ "nroff-code-font",	required_argument, NULL, 7 },
+
+		/*
+		 * Deprecated "inverse" options: these were never
+		 * documented to start with.  They turn back on
+		 * functionality that's the default to start with.
+		 */
+
+		{ "term-colour",	no_argument, 	&rfl, LOWDOWN_TERM_NOCOLOUR },
+		{ "term-ansi",		no_argument, 	&rfl, LOWDOWN_TERM_NOANSI },
+		{ "term-no-all-meta",	no_argument, 	&rfl, LOWDOWN_TERM_ALL_META },
+		{ "term-no-all-metadata", no_argument, 	&rfl, LOWDOWN_TERM_ALL_META },
+		{ "term-no-nolinks",	no_argument, 	&rfl, LOWDOWN_TERM_NOLINK },
+		{ "term-no-shortlinks",	no_argument, 	&rfl, LOWDOWN_TERM_SHORTLINK },
+		{ "out-smarty",		no_argument,	&afl, LOWDOWN_SMARTY },
+		{ "out-no-standalone",	no_argument,	&rfl, LOWDOWN_STANDALONE },
+		{ "gemini-no-link-inline",no_argument, 	&rfl, LOWDOWN_GEMINI_LINK_IN },
+		{ "gemini-no-link-end",	no_argument, 	&rfl, LOWDOWN_GEMINI_LINK_END },
+		{ "gemini-no-link-roman", no_argument, 	&rfl, LOWDOWN_GEMINI_LINK_ROMAN },
+		{ "gemini-no-link-noref", no_argument, 	&rfl, LOWDOWN_GEMINI_LINK_NOREF },
+		{ "gemini-no-metadata",	no_argument, 	&rfl, LOWDOWN_GEMINI_METADATA },
+		{ "odt-skiphtml",	no_argument,	&afl, LOWDOWN_ODT_SKIP_HTML },
+		{ "latex-numbered",	no_argument,	&afl, LOWDOWN_LATEX_NUMBERED },
+		{ "latex-skiphtml",	no_argument,	&afl, LOWDOWN_LATEX_SKIP_HTML },
+		{ "html-escapehtml",	no_argument,	&afl, LOWDOWN_HTML_ESCAPE },
+		{ "html-no-hardwrap",	no_argument,	&rfl, LOWDOWN_HTML_HARD_WRAP },
+		{ "html-head-ids",	no_argument,	&afl, LOWDOWN_HTML_HEAD_IDS },
+		{ "html-num-ent",	no_argument,	&afl, LOWDOWN_HTML_NUM_ENT },
+		{ "html-owasp",		no_argument,	&afl, LOWDOWN_HTML_OWASP },
+		{ "html-skiphtml",	no_argument,	&afl, LOWDOWN_HTML_SKIP_HTML },
+		{ "html-no-titleblock",	no_argument,	&rfl, LOWDOWN_HTML_TITLEBLOCK },
+		{ "html-no-callout-mdn",no_argument,	&rfl, LOWDOWN_HTML_CALLOUT_MDN },
+		{ "html-no-callout-gfm",no_argument,	&rfl, LOWDOWN_HTML_CALLOUT_GFM },
+		{ "parse-no-hilite",	no_argument,	&rifl, LOWDOWN_HILITE },
+		{ "parse-tables",	no_argument,	&aifl, LOWDOWN_TABLES },
+		{ "parse-fenced",	no_argument,	&aifl, LOWDOWN_FENCED },
+		{ "parse-footnotes",	no_argument,	&aifl, LOWDOWN_FOOTNOTES },
+		{ "parse-autolink",	no_argument,	&aifl, LOWDOWN_AUTOLINK },
+		{ "parse-strike",	no_argument,	&aifl, LOWDOWN_STRIKE },
+		{ "parse-super",	no_argument,	&aifl, LOWDOWN_SUPER },
+		{ "parse-no-super-short",no_argument,	&rifl, LOWDOWN_SUPER_SHORT },
+		{ "parse-no-math",	no_argument,	&rifl, LOWDOWN_MATH },
+		{ "parse-mantitle",	no_argument,	&aifl, LOWDOWN_MANTITLE },
+		{ "parse-codeindent",	no_argument,	&rifl, LOWDOWN_NOCODEIND },
+		{ "parse-intraemph",	no_argument,	&rifl, LOWDOWN_NOINTEM },
+		{ "parse-metadata",	no_argument,	&aifl, LOWDOWN_METADATA },
+		{ "parse-cmark",	no_argument,	&aifl, LOWDOWN_COMMONMARK },
+		{ "parse-deflists",	no_argument,	&aifl, LOWDOWN_DEFLIST },
+		{ "parse-img-ext",	no_argument,	&aifl, LOWDOWN_IMG_EXT },
+		{ "parse-ext-attrs",	no_argument,	&aifl, LOWDOWN_ATTRS },
+		{ "parse-tasklists",	no_argument,	&aifl, LOWDOWN_TASKLIST },
+		{ "parse-callouts",	no_argument,	&aifl, LOWDOWN_CALLOUTS },
+
+		/*
+		 * Some options re-hyphenated for consistency.
+		 */
+
+		{ "term-nolinks",	no_argument, 	&afl, LOWDOWN_TERM_NOLINK },
+		{ "term-shortlinks",	no_argument, 	&afl, LOWDOWN_TERM_SHORTLINK },
+
 		{ NULL,			0,	NULL,	0 }
 	};
 
 	/* Get the real number of columns or 72. */
 
-	rcols = get_columns();
+	memset(&topts, 0, sizeof(struct lowdown_opts_term));
+	topts.cols = get_columns();
+	topts.hpadding = 4;
 
 	sandbox_pre();
 
@@ -329,6 +475,8 @@ main(int argc, char *argv[])
 		LOWDOWN_DEFLIST |
 		LOWDOWN_FENCED |
 		LOWDOWN_FOOTNOTES |
+		LOWDOWN_CALLOUTS |
+		LOWDOWN_MANTITLE |
 		LOWDOWN_METADATA |
 		LOWDOWN_STRIKE |
 		LOWDOWN_SUPER |
@@ -368,6 +516,8 @@ main(int argc, char *argv[])
 		case 's':
 			opts.oflags |= LOWDOWN_STANDALONE;
 			break;
+		case 't':
+			/* FALLTHROUGH */
 		case 'T':
 			if (strcasecmp(optarg, "ms") == 0)
 				opts.type = LOWDOWN_NROFF;
@@ -392,40 +542,46 @@ main(int argc, char *argv[])
 			break;
 		case 'X':
 			extract = optarg;
+			list = 0;
+			break;
+		case 'L':
+			list = 1;
+			extract = NULL;
 			break;
 		case 0:
-			if (roflag)
-				opts.oflags &= ~roflag;
-			if (aoflag)
-				opts.oflags |= aoflag;
-			if (riflag)
-				opts.feat &= ~riflag;
-			if (aiflag)
-				opts.feat |= aiflag;
+			if (rfl)
+				opts.oflags &= ~rfl;
+			if (afl)
+				opts.oflags |= afl;
+			if (rifl)
+				opts.feat &= ~rifl;
+			if (aifl)
+				opts.feat |= aifl;
 			break;
 		case 1:
-			opts.cols = strtonum(optarg, 0, INT_MAX, &er);
+			topts.width = strtonum(optarg, 0, INT_MAX, &er);
 			if (er == NULL)
 				break;
 			errx(1, "--term-width: %s", er);
 		case 2:
-			if (strcmp(optarg, "centre") == 0 ||
-			    strcmp(optarg, "centre") == 0) {
-				centre = 1;
+			if (strcmp(optarg, "auto") == 0 ||
+			    strcmp(optarg, "centre") == 0 ||
+			    strcmp(optarg, "center") == 0) {
+				topts.centre = 1;
 				break;
 			}
-			opts.hmargin = strtonum
+			topts.hmargin = strtonum
 				(optarg, 0, INT_MAX, &er);
 			if (er == NULL)
 				break;
 			errx(1, "--term-hmargin: %s", er);
 		case 3:
-			opts.vmargin = strtonum(optarg, 0, INT_MAX, &er);
+			topts.vmargin = strtonum(optarg, 0, INT_MAX, &er);
 			if (er == NULL)
 				break;
 			errx(1, "--term-vmargin: %s", er);
 		case 4:
-			rcols = strtonum(optarg, 1, INT_MAX, &er);
+			topts.cols = strtonum(optarg, 1, INT_MAX, &er);
 			if (er == NULL)
 				break;
 			errx(1, "--term-columns: %s", er);
@@ -434,9 +590,57 @@ main(int argc, char *argv[])
 			if (er == NULL)
 				break;
 			errx(1, "--parse-maxdepth: %s", er);
+		case 6:
+			odtstylefn = optarg;
+			break;
+		case 7:
+			/*
+			 * Break down some aliases here: "none", "bold",
+			 * or "code".
+			 */
+			if (strcmp(optarg, "none") == 0)
+				nroffcodefn = strdup("R,B,I,BI");
+			else if (strcmp(optarg, "bold") == 0)
+				nroffcodefn = strdup("B,B,BI,BI");
+			else if (strcmp(optarg, "code") == 0)
+				nroffcodefn = strdup("CR,CB,CI,CBI");
+			else
+				nroffcodefn = strdup(optarg);
+			if (nroffcodefn == NULL)
+				err(1, NULL);
+			break;
+		case 8:
+			templfn = optarg;
+			break;
+		case 9:
+			topts.hpadding = strtonum
+				(optarg, 0, INT_MAX, &er);
+			if (er == NULL)
+				break;
+			errx(1, "--term-hpadding: %s", er);
+		case 10:
+			/*
+			 * Print the version with --version.
+			 */
+			printf("lowdown %s\n", VERSION);
+			return 0;
+		case 'h':
+			/* FALLTHROUGH */
+		case 11:
+			/*
+			 * Used by -h or --help to print the usage
+			 * message and not exit with failure.
+			 */
+			status = 0;
+			goto usage;
 		default:
+			/*
+			 * Bad argument: exit with failure.
+			 */
 			goto usage;
 		}
+
+	status = 0;
 
 	argc -= optind;
 	argv += optind;
@@ -445,21 +649,8 @@ main(int argc, char *argv[])
  	    opts.type == LOWDOWN_GEMINI)
 		setlocale(LC_CTYPE, "");
 
-	/* 
-	 * By default, try to show 80 columns.
-	 * Don't show more than the number of available columns.
-	 */
-
-	if (opts.cols == 0) {
-		if ((opts.cols = rcols) > 80)
-			opts.cols = 80;
-	} else if (opts.cols > rcols)
-		opts.cols = rcols;
-
-	/* If we're centred, set our margins. */
-
-	if (centre && opts.cols < rcols)
-		opts.hmargin = (rcols - opts.cols) / 2;
+	if (opts.type == LOWDOWN_TERM)
+		opts.term = topts;
 
 	/* 
 	 * Diff mode takes two arguments: the first is mandatory (the
@@ -487,6 +678,63 @@ main(int argc, char *argv[])
 		}
 	}
 
+	/*
+	 * If we have a template specified, load it now before we drop
+	 * privileges.
+	 */
+
+	if (templfn != NULL)
+		opts.templ = templptr = readfile(templfn);
+
+	/*
+	 * DEPRECATED: use --template instead.
+	 */
+
+	if (opts.type == LOWDOWN_FODT && odtstylefn != NULL)
+		opts.odt.sty = odtstyleptr = readfile(odtstylefn);
+
+	/*
+	 * If specified and in -tman or -tms, parse the constant width
+	 * fonts.  As mentioned in nroff.c, the code font "C" is not
+	 * portable, so let the user override it.  This comes as a
+	 * comma-separated sequence of R[,B[,I[,BI]]].  Any of these may
+	 * inherit the default by being unspecified or empty, e.g.,
+	 * "CR,CB".
+	 */
+
+	if ((opts.type == LOWDOWN_MAN || opts.type == LOWDOWN_NROFF) &&
+	    nroffcodefn != NULL && *nroffcodefn != '\0') {
+		opts.nroff.cr = cp = nroffcodefn;
+		while (*cp != '\0' && *cp != ',')
+			cp++;
+		if (*cp != '\0') {
+			*cp++ = '\0';
+			opts.nroff.cb = cp;
+			while (*cp != '\0' && *cp != ',')
+				cp++;
+			if (*cp != '\0') {
+				*cp++ = '\0';
+				opts.nroff.ci = cp;
+				while (*cp != '\0' && *cp != ',')
+					cp++;
+				if (*cp != '\0') {
+					*cp++ = '\0';
+					opts.nroff.cbi = cp;
+					while (*cp != '\0' && *cp != ',')
+						cp++;
+				}
+			}
+		}
+		if (opts.nroff.cr != NULL && *opts.nroff.cr == '\0')
+			opts.nroff.cr = NULL;
+		if (opts.nroff.cb != NULL && *opts.nroff.cb == '\0')
+			opts.nroff.cb = NULL;
+		if (opts.nroff.ci != NULL && *opts.nroff.ci == '\0')
+			opts.nroff.ci = NULL;
+		if (opts.nroff.cbi != NULL && *opts.nroff.cbi == '\0')
+			opts.nroff.cbi = NULL;
+	}
+
 	/* Configure the output file. */
 
 	if (fnout != NULL && strcmp(fnout, "-") &&
@@ -500,7 +748,7 @@ main(int argc, char *argv[])
 
 	/* Require metadata when extracting. */
 
-	if (extract)
+	if (extract || list)
 		opts.feat |= LOWDOWN_METADATA;
 
 	/* 
@@ -533,10 +781,17 @@ main(int argc, char *argv[])
 			status = 1;
 			warnx("%s: unknown keyword", extract);
 		}
+	} else if (list) {
+		assert(!diff);
+		TAILQ_FOREACH(m, &mq, entries)
+			fprintf(fout, "%s\n", m->key);
 	} else
 		fwrite(ret, 1, retsz, fout);
 
 	free(ret);
+	free(nroffcodefn);
+	free(templptr);
+	free(odtstyleptr);
 
 	if (fout != stdout)
 		fclose(fout);
@@ -558,11 +813,15 @@ main(int argc, char *argv[])
 usage:
 	if (!diff) {
 		fprintf(stderr, 
-			"usage: lowdown [-s] [input_options] [output_options] [-M metadata]\n"
-			"               [-m metadata] [-o output] [-T mode] [-X keyword] [file]\n");
+			"usage: lowdown [-hLs] [input_options] "
+			"[output_options] [-M metadata]\n"
+			"               [-m metadata] "
+			"[-o output] [-t mode] [-X keyword] [file]\n");
 	} else
 		fprintf(stderr, 
-			"usage: lowdown-diff [-s] [input_options] [output_options] [-M metadata]\n"
-			"                    [-m metadata] [-o output] [-T mode] oldfile [newfile]\n");
-	return 1;
+			"usage: lowdown-diff [-hs] [input_options] "
+			"[output_options] [-M metadata]\n"
+			"                    [-m metadata] "
+			"[-o output] [-t mode] oldfile [newfile]\n");
+	return status;
 }

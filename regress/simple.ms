@@ -1,26 +1,28 @@
 .NH 1
-.XN An h1 header
+An h1 header
+.pdfhref O 1 An h1 header
+.pdfhref M an-h1-header
 .LP
 Paragraphs are separated by a blank line.
 .PP
-2nd paragraph. \fIItalic\fR, \fBbold\fR, and \fCmonospace\fR. Itemized lists
+2nd paragraph. \fIItalic\fR, \fBbold\fR, and \f(CRmonospace\fR. Itemized lists
 look like:
-.IP "\(bu" 2
+.IP "\(bu" 5
 this one
 .if n \
 .sp -1
 .if t \
 .sp -0.25v
-.IP "\(bu" 2
+.IP "\(bu" 5
 that one
 .if n \
 .sp -1
 .if t \
 .sp -0.25v
-.IP "\(bu" 2
+.IP "\(bu" 5
 the other one
 .LP
-Note that \[u2014] not considering the asterisk \[u2014] the actual text
+Note that \(em not considering the asterisk \(em the actual text
 content starts at 4-columns in.
 .RS
 .PP
@@ -30,31 +32,33 @@ written like so.
 They can span multiple paragraphs,
 if you like.
 .RE
-.LP
-Use 3 dashes for an em-dash. Use 2 dashes for ranges (ex., \[u201C]it\[u2019]s all
-in chapters 12\[u2013]14\[u201D]). Three dots \[u2026] will be converted to an ellipsis.
+.PP
+Use 3 dashes for an em-dash. Use 2 dashes for ranges (ex., \(lqit\(cqs all
+in chapters 12\(en14\(rq). Three dots \[u2026] will be converted to an ellipsis.
 Unicode is supported. ☺
 .NH 2
-.XN An h2 header
+An h2 header
+.pdfhref O 2 An h2 header
+.pdfhref M an-h2-header
 .LP
-Here\[u2019]s a numbered list:
-.IP "1.  "
+Here\(cqs a numbered list:
+.IP "1." 5
 first item
 .if n \
 .sp -1
 .if t \
 .sp -0.25v
-.IP "2.  "
+.IP "2." 5
 second item
 .if n \
 .sp -1
 .if t \
 .sp -0.25v
-.IP "3.  "
+.IP "3." 5
 third item
 .LP
 Note again how the actual text starts at 4 columns in (4 characters
-from the left side). Here\[u2019]s a code sample:
+from the left side). Here\(cqs a code sample:
 .LP
 .nf
 .ft CR
@@ -88,30 +92,32 @@ for i in range(10):
 .ft
 .fi
 .NH 3
-.XN An h3 header
+An h3 header
+.pdfhref O 3 An h3 header
+.pdfhref M an-h3-header
 .LP
 Now a nested list:
-.IP "1.  "
+.IP "1." 5
 First, get these ingredients:
 .RS
-.IP "\(bu" 2
+.IP "\(bu" 5
 carrots
 .if n \
 .sp -1
 .if t \
 .sp -0.25v
-.IP "\(bu" 2
+.IP "\(bu" 5
 celery
 .if n \
 .sp -1
 .if t \
 .sp -0.25v
-.IP "\(bu" 2
+.IP "\(bu" 5
 lentils
 .RE
-.IP "2.  "
+.IP "2." 5
 Boil some water.
-.IP "3.  "
+.IP "3." 5
 Dump everything in the pot and follow
 this algorithm:
 .LP
@@ -132,13 +138,19 @@ Do not bump wooden spoon or it will fall.
 Notice again how text always lines up on 4-space indents (including
 that last line which continues item 3 above).
 .PP
-Here\[u2019]s a link to 
-.pdfhref W -A "," -D http://foo.bar a website
-to a 
-.pdfhref W -A "," -D local-doc.html local doc
-and to a 
-.pdfhref W -A "." -D #an-h2-header section heading in the current doc
-Here\[u2019]s a footnote \**.
+Here\(cqs a link to \c
+.pdfhref W -A "\c" -D http://foo.bar -- a website
+, to a \c
+.pdfhref W -A "\c" -D local-doc.html -- local doc
+, and to a \c
+.pdfhref L -A "\c" -D #an-h2-header -- section heading in the current doc
+\&. Here\(cqs a footnote \c
+.pdfhref L -A "\c" -D footnote-1 -- \**
+\&.
+.FS
+.pdfhref M footnote-1
+Footnote text goes here.
+.FE
 .PP
 Tables can look like this:
 .TS H
@@ -175,39 +187,42 @@ T}|T{
 transparent
 T}
 .TE
-.LP
-Table: Shoes, their sizes, and what they\[u2019]re made of
+.PP
+Table: Shoes, their sizes, and what they\(cqre made of
 .PP
 (The above is the caption for the table.)
 .PP
 A horizontal rule follows.
 .LP
-\l'\n(.lu-\n(\n[.in]u'
-.PP
-Here\[u2019]s a definition list:
-.IP "apples"
+.ie d HR \{\
+.HR
+\}
+.el \{\
+.sp 1v
+\l'\n(.lu'
+.sp 1v
+.\}
+.LP
+Here\(cqs a definition list:
+.XP
+apples
+.br
 Good for making applesauce.
-.if n \
-.sp -1
-.if t \
-.sp -0.25v
-.IP "oranges"
+.XP
+oranges
+.br
 Citrus!
-.if n \
-.sp -1
-.if t \
-.sp -0.25v
-.IP "tomatoes"
-There\[u2019]s no \[u201C]e\[u201D] in tomatoe.
+.XP
+tomatoes
+.br
+There\(cqs no \(lqe\(rq in tomatoe.
 .LP
 Again, text is indented 4 spaces. (Put a blank line between each
 term/definition pair to spread things out more.)
 .PP
 Images can be specified like so:
 .PP
+\fBexample image\fR (Image: \fIexample-image.jpg\fR)
 .PP
 And note that you can backslash-escape any punctuation characters
 which you wish to be displayed literally, ex.: \(gafoo\(ga, *bar*, etc.
-.FS
-Footnote text goes here.
-.FE

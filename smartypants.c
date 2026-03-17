@@ -1,6 +1,5 @@
-/*	$Id$ */
 /*
- * Copyright (c) 2020 Kristaps Dzonsons <kristaps@bsd.lv>
+ * Copyright (c) Kristaps Dzonsons <kristaps@bsd.lv>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -53,7 +52,7 @@ enum type {
 	TYPE_BLOCK, /* block-level */
 	TYPE_SPAN, /* span-level */
 	TYPE_OPAQUE, /* skip */
-	TYPE_TEXT /* text (LOWDOWN_NORMAL_TEXT) */
+	TYPE_TEXT /* text (LOWDOWN_NORMAL_TEXT, LOWDOWN_LINEBREAK) */
 };
 
 struct sym {
@@ -133,8 +132,6 @@ static const enum type types[LOWDOWN__MAX] = {
 	TYPE_BLOCK, /* LOWDOWN_TABLE_BODY */
 	TYPE_BLOCK, /* LOWDOWN_TABLE_ROW */
 	TYPE_BLOCK, /* LOWDOWN_TABLE_CELL */
-	TYPE_BLOCK, /* LOWDOWN_FOOTNOTES_BLOCK */
-	TYPE_BLOCK, /* LOWDOWN_FOOTNOTE_DEF */
 	TYPE_OPAQUE, /* LOWDOWN_BLOCKHTML */
 	TYPE_OPAQUE, /* LOWDOWN_LINK_AUTO */
 	TYPE_OPAQUE, /* LOWDOWN_CODESPAN */
@@ -142,19 +139,19 @@ static const enum type types[LOWDOWN__MAX] = {
 	TYPE_SPAN, /* LOWDOWN_EMPHASIS */
 	TYPE_SPAN, /* LOWDOWN_HIGHLIGHT */
 	TYPE_SPAN, /* LOWDOWN_IMAGE */
-	TYPE_SPAN, /* LOWDOWN_LINEBREAK */
+	TYPE_TEXT, /* LOWDOWN_LINEBREAK */
 	TYPE_SPAN, /* LOWDOWN_LINK */
 	TYPE_SPAN, /* LOWDOWN_TRIPLE_EMPHASIS */
 	TYPE_SPAN, /* LOWDOWN_STRIKETHROUGH */
+	TYPE_SPAN, /* LOWDOWN_SUBSCRIPT */
 	TYPE_SPAN, /* LOWDOWN_SUPERSCRIPT */
-	TYPE_SPAN, /* LOWDOWN_FOOTNOTE_REF */
+	TYPE_BLOCK, /* LOWDOWN_FOOTNOTE */
 	TYPE_OPAQUE, /* LOWDOWN_MATH_BLOCK */
 	TYPE_OPAQUE, /* LOWDOWN_RAW_HTML */
 	TYPE_OPAQUE, /* LOWDOWN_ENTITY */
 	TYPE_TEXT, /* LOWDOWN_NORMAL_TEXT */
 	TYPE_BLOCK, /* LOWDOWN_DOC_HEADER */
-	TYPE_BLOCK, /* LOWDOWN_META */
-	TYPE_BLOCK, /* LOWDOWN_DOC_FOOTER */
+	TYPE_OPAQUE, /* LOWDOWN_META */
 };
 
 /*
@@ -261,12 +258,18 @@ smarty_right_wb_r(const struct lowdown_node *n, int skip)
 	if (types[n->type] == TYPE_OPAQUE)
 		return 0;
 
-	if (!skip &&
-	    types[n->type] == TYPE_TEXT &&
-	    n->rndr_normal_text.text.size) {
-		assert(n->type == LOWDOWN_NORMAL_TEXT);
-		b = &n->rndr_normal_text.text;
-		return smarty_is_wb_r(b->data[0]);
+	/*
+	 * Right wordbreak always on linebreak, conditionally on text if
+	 * normal text.
+	 */
+
+	if (!skip && types[n->type] == TYPE_TEXT) {
+		if (n->type == LOWDOWN_NORMAL_TEXT &&
+		    n->rndr_normal_text.text.size) {
+			b = &n->rndr_normal_text.text;
+			return smarty_is_wb_r(b->data[0]);
+		} else if (n->type == LOWDOWN_LINEBREAK)
+			return 1;
 	}
 
 	/* First scan down. */
@@ -312,12 +315,24 @@ smarty_right_wb(const struct lowdown_node *n, size_t pos)
  * of the parse tree, <0 on failure, otherwise return zero.
  */
 static int
-smarty_hbuf(struct lowdown_node *n, size_t *maxn,
+smarty_text(struct lowdown_node *n, size_t *maxn,
 	struct lowdown_buf *b, struct smarty *s)
 {
 	size_t	 i = 0, j, sz;
 
+	/* Linebreak is always a left word boundary. */
+
+	if (n->type == LOWDOWN_LINEBREAK) {
+		s->left_wb = 1;
+		return 0;
+	}
+
 	assert(n->type == LOWDOWN_NORMAL_TEXT);
+
+	/* If the text node was escaped, pass it out unchanged. */
+
+	if (n->rndr_normal_text.flags & HTEXT_ESCAPED)
+		return 0;
 
 	for (i = 0; i < b->size; i++) {
 		switch (b->data[i]) {
@@ -399,7 +414,11 @@ smarty_hbuf(struct lowdown_node *n, size_t *maxn,
 }
 
 static int
-smarty_span(struct lowdown_node *root, size_t *maxn, struct smarty *s)
+smarty_block(struct lowdown_node *, size_t *, enum lowdown_type);
+
+static int
+smarty_span(struct lowdown_node *root, size_t *maxn,
+	struct smarty *s, enum lowdown_type type)
 {
 	struct lowdown_node	*n;
 	int			 c;
@@ -407,8 +426,7 @@ smarty_span(struct lowdown_node *root, size_t *maxn, struct smarty *s)
 	TAILQ_FOREACH(n, &root->children, entries)
 		switch (types[n->type]) {
 		case TYPE_TEXT:
-			assert(n->type == LOWDOWN_NORMAL_TEXT);
-			c = smarty_hbuf(n, maxn, 
+			c = smarty_text(n, maxn,
 				&n->rndr_normal_text.text, s);
 			if (c < 0)
 				return 0;
@@ -416,16 +434,18 @@ smarty_span(struct lowdown_node *root, size_t *maxn, struct smarty *s)
 				n = TAILQ_NEXT(n, entries);
 			break;
 		case TYPE_SPAN:
-			if (!smarty_span(n, maxn, s))
+			if (!smarty_span(n, maxn, s, type))
 				return 0;
 			break;
 		case TYPE_OPAQUE:
 			s->left_wb = 0;
 			break;
-		case TYPE_ROOT:
 		case TYPE_BLOCK:
-			abort();
+			if (!smarty_block(n, maxn, type))
+				return 0;
 			break;
+		case TYPE_ROOT:
+			abort();
 		}
 
 	return 1;
@@ -445,13 +465,11 @@ smarty_block(struct lowdown_node *root,
 		switch (types[n->type]) {
 		case TYPE_ROOT:
 		case TYPE_BLOCK:
-			s.left_wb = 1;
 			if (!smarty_block(n, maxn, type))
 				return 0;
 			break;
 		case TYPE_TEXT:
-			assert(n->type == LOWDOWN_NORMAL_TEXT);
-			c = smarty_hbuf(n, maxn, 
+			c = smarty_text(n, maxn,
 				&n->rndr_normal_text.text, &s);
 			if (c < 0)
 				return 0;
@@ -459,7 +477,7 @@ smarty_block(struct lowdown_node *root,
 				n = TAILQ_NEXT(n, entries);
 			break;
 		case TYPE_SPAN:
-			if (!smarty_span(n, maxn, &s))
+			if (!smarty_span(n, maxn, &s, type))
 				return 0;
 			break;
 		case TYPE_OPAQUE:

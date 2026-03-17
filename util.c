@@ -1,6 +1,5 @@
-/*	$Id$ */
 /*
- * Copyright (c) 2017 Kristaps Dzonsons <kristaps@bsd.lv>
+ * Copyright (c) Kristaps Dzonsons <kristaps@bsd.lv>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -20,8 +19,10 @@
 # include <sys/queue.h>
 #endif
 
+#include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "lowdown.h"
@@ -116,28 +117,43 @@ rcsauthor2str(const char *v)
 	return buf;
 }
 
-/*
- * Convert an ISO date (y/m/d or y-m-d) to a canonical form.
- * Returns NULL if the string is malformed at all or the date otherwise.
- */
-char *
-date2str(const char *v)
+struct lowdown_meta *
+lowdown_get_meta(const struct lowdown_node *n, struct lowdown_metaq *mq)
 {
-	unsigned int	y, m, d;
-	int		rc;
-	static char	buf[32];
+	struct lowdown_meta		*m, *ret = NULL;
+	struct lowdown_buf		*ob = NULL;
+	const struct lowdown_node	*child;
+	const struct rndr_meta		*params = &n->rndr_meta;
 
-	if (NULL == v)
-		return(NULL);
+	assert(n->type == LOWDOWN_META);
 
-	rc = sscanf(v, "%u/%u/%u", &y, &m, &d);
-	if (3 != rc) {
-		rc = sscanf(v, "%u-%u-%u", &y, &m, &d);
-		if (3 != rc)
-			return(NULL);
+	if ((m = calloc(1, sizeof(struct lowdown_meta))) == NULL)
+		goto out;
+	TAILQ_INSERT_TAIL(mq, m, entries);
+
+	m->key = strndup(params->key.data, params->key.size);
+	if (m->key == NULL)
+		goto out;
+
+	/*
+	 * (Re-)Concatenate all child text, but discard any escaping,
+	 * which is handled when the metadata is written to output.
+	 */
+
+	if ((ob = hbuf_new(32)) == NULL)
+		goto out;
+	TAILQ_FOREACH(child, &n->children, entries) {
+		assert(child->type == LOWDOWN_NORMAL_TEXT);
+		if (!hbuf_putb(ob, &child->rndr_normal_text.text))
+			goto out;
 	}
+	m->value = ob->size == 0 ?
+		strdup("") : strndup(ob->data, ob->size);
+	if (m->value == NULL)
+		goto out;
 
-	snprintf(buf, sizeof(buf), "%u-%.2u-%.2u", y, m, d);
-	return(buf);
+	ret = m;
+out:
+	hbuf_free(ob);
+	return ret;
 }
-

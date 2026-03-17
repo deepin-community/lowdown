@@ -1,9 +1,8 @@
-/*	$Id$ */
 /*
  * Copyright (c) 2008, Natacha Porté
  * Copyright (c) 2011, Vicent Martí
  * Copyright (c) 2014, Xavier Mendez, Devin Torres and the Hoedown authors
- * Copyright (c) 2016--2017, 2020 Kristaps Dzonsons <kristaps@bsd.lv>
+ * Copyright (c) Kristaps Dzonsons <kristaps@bsd.lv>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -23,7 +22,6 @@
 # include <sys/queue.h>
 #endif
 
-#include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -144,7 +142,8 @@ static const char *esc_num[] = {
  * This is modelled after the main Markdown parser.
  */
 int
-hesc_attr(struct lowdown_buf *ob, const char *data, size_t size)
+lowdown_html_esc_attr(struct lowdown_buf *ob, const char *data,
+    size_t size)
 {
 	size_t	 	 i, mark;
 	int		 rc;
@@ -184,7 +183,8 @@ hesc_attr(struct lowdown_buf *ob, const char *data, size_t size)
  * Return zero on failure (memory), non-zero otherwise.
  */
 int
-hesc_href(struct lowdown_buf *ob, const char *data, size_t size)
+lowdown_html_esc_href(struct lowdown_buf *ob, const char *data,
+    size_t size)
 {
 	static const char 	hex_chars[] = "0123456789ABCDEF";
 	size_t  		i, mark;
@@ -252,16 +252,17 @@ hesc_href(struct lowdown_buf *ob, const char *data, size_t size)
 }
 
 /* 
- * Escape HTML.
- * If "literal", we also want to escape some extra characters.
+ * Escape HTML (really XML).
+ * If "literal", also escape some extra characters.
  * If "secure", also escape characters as suggested by OWASP rules.
+ * FIXME: literal and secure do the same thing.
  * If "num", use only numeric escapes.
  * Does nothing if "size" is zero.
  * Return zero on failure (memory), non-zero otherwise.
  */
 int
-hesc_html(struct lowdown_buf *ob, const char *data,
-	size_t size, int secure, int literal, int num)
+lowdown_html_esc(struct lowdown_buf *ob, const char *data,
+    size_t size, int secure, int literal, int num)
 {
 	size_t 		i, mark;
 	int		max = 0, rc;

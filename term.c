@@ -1,6 +1,5 @@
-/*	$Id$ */
 /*
- * Copyright (c) 2020--2021 Kristaps Dzonsons <kristaps@bsd.lv>
+ * Copyright (c) Kristaps Dzonsons <kristaps@bsd.lv>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -33,23 +32,29 @@
 #include "extern.h"
 
 struct tstack {
-	const struct lowdown_node 	*n; /* node in question */
-	size_t				 lines; /* times emitted */
+	const struct lowdown_node *n; /* node in question */
+	size_t			   lines; /* times emitted */
 };
 
 struct term {
-	unsigned int		 opts; /* oflags from lowdown_cfg */
-	size_t			 col; /* output column from zero */
-	ssize_t			 last_blank; /* line breaks or -1 (start) */
-	struct tstack		*stack; /* stack of nodes */
-	size_t			 stackmax; /* size of stack */
-	size_t			 stackpos; /* position in stack */
-	size_t			 maxcol; /* soft limit */
-	size_t			 hmargin; /* left of content */
-	size_t			 vmargin; /* before/after content */
-	struct lowdown_buf	*tmp; /* for temporary allocations */
-	wchar_t			*buf; /* buffer for counting wchar */
-	size_t			 bufsz; /* size of buf */
+	unsigned int		  opts; /* oflags from lowdown_cfg */
+	size_t			  col; /* output column from zero */
+	ssize_t			  last_blank; /* line breaks or -1 (start) */
+	struct tstack		 *stack; /* stack of nodes */
+	size_t			  stackmax; /* size of stack */
+	size_t			  stackpos; /* position in stack */
+	size_t			  width; /* soft width of content */
+	size_t			  hmargin; /* left of content */
+	size_t			  hpadding; /* left of content */
+	size_t			  vmargin; /* before/after content */
+	struct lowdown_buf	 *tmp; /* for temporary allocations */
+	wchar_t			 *buf; /* buffer for counting wchar */
+	size_t			  bufsz; /* size of buf */
+	struct lowdown_buf	**foots; /* footnotes */
+	size_t			  footsz; /* footnotes size  */
+	int			  footoff; /* don't collect (tables) */
+	struct lowdown_metaq	  metaq; /* metadata */
+	const struct lowdown_node*in_link; /* in an OSC8 hyperlink */
 };
 
 /*
@@ -95,8 +100,6 @@ static const struct sty *stys[LOWDOWN__MAX] = {
 	NULL, /* LOWDOWN_TABLE_BODY */
 	NULL, /* LOWDOWN_TABLE_ROW */
 	NULL, /* LOWDOWN_TABLE_CELL */
-	NULL, /* LOWDOWN_FOOTNOTES_BLOCK */
-	NULL, /* LOWDOWN_FOOTNOTE_DEF */
 	&sty_blockhtml, /* LOWDOWN_BLOCKHTML */
 	&sty_autolink, /* LOWDOWN_LINK_AUTO */
 	&sty_codespan, /* LOWDOWN_CODESPAN */
@@ -108,15 +111,15 @@ static const struct sty *stys[LOWDOWN__MAX] = {
 	&sty_link, /* LOWDOWN_LINK */
 	&sty_t_emph, /* LOWDOWN_TRIPLE_EMPHASIS */
 	&sty_strike, /* LOWDOWN_STRIKETHROUGH */
+	NULL, /* LOWDOWN_SUBSCRIPT */
 	NULL, /* LOWDOWN_SUPERSCRIPT */
-	&sty_fref, /* LOWDOWN_FOOTNOTE_REF */
+	NULL, /* LOWDOWN_FOOTNOTE */
 	NULL, /* LOWDOWN_MATH_BLOCK */
 	&sty_rawhtml, /* LOWDOWN_RAW_HTML */
 	NULL, /* LOWDOWN_ENTITY */
 	NULL, /* LOWDOWN_NORMAL_TEXT */
 	NULL, /* LOWDOWN_DOC_HEADER */
 	NULL, /* LOWDOWN_META */
-	NULL /* LOWDOWN_DOC_FOOTER */
 };
 
 /*
@@ -130,8 +133,7 @@ static const struct sty *stys[LOWDOWN__MAX] = {
 /* Forward declaration. */
 
 static int
-rndr(struct lowdown_buf *, struct lowdown_metaq *,
-	struct term *, const struct lowdown_node *);
+rndr(struct lowdown_buf *, struct term *, const struct lowdown_node *);
 
 /*
  * Get the column width of a multi-byte sequence.  The sequence should
@@ -172,6 +174,29 @@ rndr_mbswidth(struct term *term, const char *buf, size_t sz)
 }
 
 /*
+ * Determine whether a link URL is relative.  Use a simple heuristic to
+ * accomplish this: a relative URL is one without a schema.  Returns
+ * zero if not a relative link, non-zero if it is.
+ */
+static int
+link_isrelative(const struct lowdown_buf *link)
+{
+	const char	*colon;
+	size_t	 	 rem;
+
+	/* If there's no colon, it's a relative link (no schema) */
+
+	if ((colon = memchr(link->data, ':', link->size)) == NULL)
+		return 1;
+
+	/* If there's a slash before the colon, it's a (rel) path. */
+
+	assert(colon > link->data);
+	rem = colon - link->data;
+	return memchr(link->data, '/', rem) != NULL;
+}
+
+/*
  * Copy the buffer into "out", escaping along the width.
  * Returns the number of actual printed columns, which in the case of
  * multi-byte glyphs, may be less than the given bytes.
@@ -181,15 +206,17 @@ static ssize_t
 rndr_escape(struct term *term, struct lowdown_buf *out,
 	const char *buf, size_t sz)
 {
-	size_t	 i, start = 0, cols = 0;
-	ssize_t	 ret;
+	size_t		 i, start = 0, cols = 0;
+	ssize_t		 ret;
+	unsigned char	 ch;
 
 	/* Don't allow control characters through. */
 
-	for (i = 0; i < sz; i++)
-		if (iscntrl((unsigned char)buf[i])) {
-			ret = rndr_mbswidth
-				(term, buf + start, i - start);
+	for (i = 0; i < sz; i++) {
+		ch = (unsigned char)buf[i];
+		if (ch < 0x80 && iscntrl(ch)) {
+			ret = rndr_mbswidth (term, buf + start,
+				i - start);
 			if (ret < 0)
 				return -1;
 			cols += ret;
@@ -197,6 +224,7 @@ rndr_escape(struct term *term, struct lowdown_buf *out,
 				return -1;
 			start = i + 1;
 		}
+	}
 
 	/* Remaining bytes. */
 
@@ -210,6 +238,20 @@ rndr_escape(struct term *term, struct lowdown_buf *out,
 	}
 
 	return cols;
+}
+
+static void
+rndr_free_footnotes(struct term *st)
+{
+	size_t	 i;
+
+	for (i = 0; i < st->footsz; i++)
+		hbuf_free(st->foots[i]);
+
+	free(st->foots);
+	st->foots = NULL;
+	st->footsz = 0;
+	st->footoff = 0;
 }
 
 /*
@@ -227,6 +269,58 @@ rndr_buf_unstyle(const struct term *term,
 	if (s != NULL && !STY_NONEMPTY(s))
 		return 1;
 	return HBUF_PUTSL(out, "\033[0m");
+}
+
+/*
+ * Start sequence for a terminal link (only in ANSI mode).
+ */
+static int
+rndr_buf_osc8_open(const struct term *term, struct lowdown_buf *out,
+    const struct lowdown_node *n)
+{
+	const struct lowdown_buf	*uri = NULL;
+
+	if (term->opts & LOWDOWN_TERM_NOANSI)
+		return 1;
+
+	if (n->type == LOWDOWN_LINK_AUTO)
+		uri = &n->rndr_autolink.link;
+	else if (n->type == LOWDOWN_LINK)
+		uri = &n->rndr_link.link;
+	else if (n->type == LOWDOWN_IMAGE)
+		uri = &n->rndr_image.link;
+
+	/*
+	 * Don't output an id for the link.  It's trivial to have a
+	 * random per-page value for this identifier (e.g., to
+	 * initialise a random number then append the node identifier),
+	 * but let the terminal handle this.
+	 */
+
+	assert(uri != NULL);
+	return HBUF_PUTSL(out, "\033]8;;") &&
+	    hbuf_putb(out, uri) &&
+	    HBUF_PUTSL(out, "\033\\");
+}
+
+/*
+ * Close a currently-open link.
+ */
+static int
+rndr_buf_osc8_close(const struct term *term, struct lowdown_buf *out)
+{
+
+	if (term->opts & LOWDOWN_TERM_NOANSI)
+		return 1;
+
+	/*
+	 * It would be trivial to crawl up our parent chain and either
+	 * switch from the current link or close out the link context
+	 * entirely, but lowdown(5) stipulates that nested links are not
+	 * possible.
+	 */
+
+	return HBUF_PUTSL(out, "\033]8;;\033\\");
 }
 
 /*
@@ -271,8 +365,8 @@ rndr_buf_style(const struct term *term,
 			return 0;
 	}
 	if (s->bcolour && !(term->opts & LOWDOWN_TERM_NOCOLOUR) &&
-	    ((s->bcolour >= 30 && s->bcolour <= 37) ||
-	     (s->bcolour >= 90 && s->bcolour <= 97))) {
+	    ((s->bcolour >= 40 && s->bcolour <= 47) ||
+	     (s->bcolour >= 100 && s->bcolour <= 107))) {
 		if (has++ && !HBUF_PUTSL(out, ";"))
 			return 0;
 		if (!hbuf_printf(out, "%zu", s->bcolour))
@@ -394,11 +488,17 @@ static int
 rndr_buf_endwords(struct term *term, struct lowdown_buf *out,
 	const struct lowdown_node *n, const struct sty *osty)
 {
+	/*
+	 * If an OSC8 hyperlink should be closed, do it now (it doesn't
+	 * matter where this appears in relation to other styling).
+	 */
 
-	if (rndr_buf_endstyle(n))
-		return rndr_buf_unstyle(term, out, NULL);
-	if (osty != NULL)
-		return rndr_buf_unstyle(term, out, osty);
+	if (rndr_buf_endstyle(n) && !rndr_buf_unstyle(term, out, NULL))
+        	return 0;
+	if (osty != NULL && !rndr_buf_unstyle(term, out, osty))
+        	return 0;
+	if (term->in_link && !rndr_buf_osc8_close(term, out))
+        	return 0;
 	return 1;
 }
 
@@ -477,7 +577,7 @@ rndr_buf_startline_prefixes(struct term *term,
 	 * The "sinner" value is temporary for only this function.
 	 * This allows us to set a temporary style mask that only
 	 * applies to the prefix data.
-	 * Otherwise "s" propogates to the subsequent line.
+	 * Otherwise "s" propagates to the subsequent line.
 	 */
 
 	rndr_node_style(s, n);
@@ -486,32 +586,24 @@ rndr_buf_startline_prefixes(struct term *term,
 	/*
 	 * Look up the current node in the list of node's we're
 	 * servicing so we can get how many times we've output the
-	 * prefix.
-	 * This is used for (e.g.) lists, where we only output the list
-	 * prefix once.
-	 * FIXME: read backwards for faster perf.
+	 * prefix.  This is used for (e.g.) lists, where we only output
+	 * the list prefix once.  XXX: read backwards for faster perf?
 	 */
 
 	for (i = 0; i <= term->stackpos; i++)
 		if (term->stack[i].n == n)
 			break;
-	assert(i <= term->stackpos);
-	emit = term->stack[i].lines++;
 
 	/*
-	 * If we're below the document root and not a header, that means
-	 * we're in a body part.  Emit the general body indentation.
+	 * If we can't find the node, then we're in a "faked" context
+	 * like footnotes within a table.  Ignore this.  XXX: is there a
+	 * non-hacky way for this?
 	 */
 
-	if (*depth == 0 && n->type != LOWDOWN_HEADER) {
-		if (!hbuf_puts(out, pfx_body.text))
-			return 0;
-		rndr_buf_advance(term, pfx_body.cols);
-	} else if (*depth == 0) {
-		if (!hbuf_puts(out, pfx_header.text))
-			return 0;
-		rndr_buf_advance(term, pfx_header.cols);
-	}
+	if (i > term->stackpos)
+		return 1;
+
+	emit = term->stack[i].lines++;
 
 	/*
 	 * Output any prefixes.
@@ -534,6 +626,9 @@ rndr_buf_startline_prefixes(struct term *term,
 			return 0;
 		pstyle = 1;
 		for (i = 0; i < term->hmargin; i++)
+			if (!HBUF_PUTSL(out, " "))
+				return 0;
+		for (i = 0; i < term->hpadding; i++)
 			if (!HBUF_PUTSL(out, " "))
 				return 0;
 		break;
@@ -561,16 +656,16 @@ rndr_buf_startline_prefixes(struct term *term,
 			rndr_buf_advance(term, pfx_dli_n.cols);
 		}
 		break;
-	case LOWDOWN_FOOTNOTE_DEF:
+	case LOWDOWN_FOOTNOTE:
 		rndr_node_style_apply(&sinner, &sty_fdef_pfx);
 		if (!rndr_buf_style(term, out, &sinner))
 			return 0;
 		pstyle = 1;
 		if (emit == 0) {
 			if (!hbuf_printf(out, "%2zu. ",
-			     n->rndr_footnote_def.num))
+			    term->footsz + 1))
 				return 0;
-			len = rndr_numlen(n->rndr_footnote_def.num);
+			len = rndr_numlen(term->footsz + 1);
 			if (len + 2 > pfx_fdef_1.cols)
 				len += 2;
 			else
@@ -661,9 +756,11 @@ rndr_buf_startline_prefixes(struct term *term,
 }
 
 /*
- * Like rndr_buf_startwords(), but at the start of a line.
- * This also outputs all line prefixes of the block context.
- * Return zero on failure (memory), non-zero on success.
+ * Like rndr_buf_startwords(), but at the start of a line.  (Unlike
+ * rndr_buf_endline(), which calls rndr_buf_endwords(), this does not
+ * call rndr_buf_startwords().)  This also outputs all line prefixes of
+ * the block context.  Return zero on failure (memory), non-zero on
+ * success.
  */
 static int
 rndr_buf_startline(struct term *term, struct lowdown_buf *out,
@@ -678,6 +775,16 @@ rndr_buf_startline(struct term *term, struct lowdown_buf *out,
 	memset(&s, 0, sizeof(struct sty));
 	if (!rndr_buf_startline_prefixes(term, &s, n, out, &depth))
 		return 0;
+
+	/*
+	 * If an OSC8 hyperlink should be printed, do it now (it doesn't
+	 * matter where this appears in relation to other styling).
+	 */
+
+	if (term->in_link != NULL &&
+	    !rndr_buf_osc8_open(term, out, term->in_link))
+		return 0;
+
 	if (osty != NULL)
 		rndr_node_style_apply(&s, osty);
 	return rndr_buf_style(term, out, &s);
@@ -743,6 +850,15 @@ rndr_buf_startwords(struct term *term, struct lowdown_buf *out,
 {
 	struct sty	 s;
 
+	/*
+	 * If an OSC8 hyperlink should be printed, do it now (it doesn't
+	 * matter where this appears in relation to other styling).
+	 */
+
+	if (term->in_link != NULL &&
+	    !rndr_buf_osc8_open(term, out, term->in_link))
+		return 0;
+
 	assert(!term->last_blank);
 	assert(term->col > 0);
 
@@ -758,8 +874,8 @@ rndr_buf_startwords(struct term *term, struct lowdown_buf *out,
  */
 static int
 rndr_buf_literal(struct term *term, struct lowdown_buf *out,
-	const struct lowdown_node *n, const struct lowdown_buf *in,
-	const struct sty *osty)
+    const struct lowdown_node *n, const struct lowdown_buf *in,
+    const struct sty *osty)
 {
 	size_t		 i = 0, len;
 	const char	*start;
@@ -798,9 +914,10 @@ rndr_buf(struct term *term, struct lowdown_buf *out,
 	const struct lowdown_node *n, const struct lowdown_buf *in,
 	const struct sty *osty)
 {
-	size_t				 i = 0, len, cols;
+	size_t				 i = 0, len, cols, nlen;
 	ssize_t				 ret;
-	int				 needspace, begin = 1, end = 0;
+	int				 needspace, hasspace,
+					 begin = 1, end = 0;
 	const char			*start;
 	const struct lowdown_node	*nn;
 
@@ -809,22 +926,30 @@ rndr_buf(struct term *term, struct lowdown_buf *out,
 	  	    nn->type == LOWDOWN_BLOCKHTML)
 			return rndr_buf_literal(term, out, n, in, osty);
 
-	/* Start each word by seeing if it has leading space. */
-
 	while (i < in->size) {
+		/*
+		 * Whether we need a space (word begins with space) and
+		 * have a space (current printed content ends with one).
+		 */
+
 		needspace = isspace((unsigned char)in->data[i]);
+		hasspace = out->size > 0 &&
+			isspace((unsigned char)out->data[out->size - 1]);
+
+		/* Skip to next word, then see how long the word is. */
 
 		while (i < in->size &&
 		       isspace((unsigned char)in->data[i]))
 			i++;
-
-		/* See how long it the coming word (may be 0). */
-
 		start = &in->data[i];
 		while (i < in->size &&
 		       !isspace((unsigned char)in->data[i]))
 			i++;
+
+		/* Get length and adjusted length (includes space). */
+
 		len = &in->data[i] - start;
+		nlen = len + (needspace ? 1 : 0);
 
 		/*
 		 * If we cross our maximum width and are preceded by a
@@ -835,10 +960,9 @@ rndr_buf(struct term *term, struct lowdown_buf *out,
 		 * This will also unset the current style.
 		 */
 
-		if ((needspace ||
-	 	     (out->size && isspace
-		      ((unsigned char)out->data[out->size - 1]))) &&
-		    term->col && term->col + len > term->maxcol) {
+		if ((needspace || hasspace) &&
+		    term->col > 0 &&
+		    term->col + nlen >= term->width) {
 			if (!rndr_buf_endline(term, out, n, osty))
 				return 0;
 			end = 0;
@@ -926,24 +1050,122 @@ rndr_entity(struct lowdown_buf *buf, int32_t val)
 }
 
 /*
+ * Render a horizontal rule by repeating the character(s) in "hr" until
+ * the full screen width has been met.  This presumes that the caller
+ * has started a new line.  The style may be NULL.  A zero-length rule
+ * is silently ignored.
+ */
+static int
+rndr_hrule(struct term *st, struct lowdown_buf *ob, const char *hr,
+    const struct lowdown_node *n, const struct sty *sty)
+{
+	ssize_t	 ssz;
+	size_t	 sz, i;
+
+	if ((sz = strlen(hr)) == 0)
+		return 1;
+	if ((ssz = rndr_mbswidth(st, hr, sz)) < 0)
+		return 0;
+	if (ssz == 0)
+		return 1;
+	hbuf_truncate(st->tmp);
+	for (i = 0; i + ssz <= st->width; i += ssz)
+		if (!hbuf_puts(st->tmp, hr))
+			return 0;
+	return rndr_buf_literal(st, ob, n, st->tmp, sty);
+}
+
+static int
+rndr_image(struct term *st, struct lowdown_buf *ob,
+    const struct lowdown_node *n)
+{
+	const struct lowdown_node	*nn, *link = NULL;
+
+	for (nn = n->parent; nn != NULL; nn = nn->parent)
+		if (nn->type == LOWDOWN_LINK) {
+			link = nn;
+			break;
+		}
+
+	/*
+	 * This is a bit more complicated than LOWDOWN_LINK
+	 * because the image "alt" is in a buffer and not
+	 * arranged as child nodes.  Begin with the image-left
+	 * bracketing.
+	 */
+
+	hbuf_truncate(st->tmp);
+	if (!hbuf_puts(st->tmp, ifx_imgbox_left) ||
+	    !rndr_buf(st, ob, n, st->tmp, &sty_imgbox))
+		return 0;
+
+	if (link != NULL)
+		st->in_link = link;
+	if (!rndr_buf(st, ob, n, &n->rndr_image.alt, &sty_linkalt))
+		return 0;
+	st->in_link = n;
+
+	/* If omitting the link, right-bracket and bail. */
+
+	if ((st->opts & LOWDOWN_TERM_NOLINK) ||
+	    ((st->opts & LOWDOWN_TERM_NORELLINK) &&
+	     link_isrelative(&n->rndr_image.link))) {
+		hbuf_truncate(st->tmp);
+		if (!hbuf_puts(st->tmp, ifx_imgbox_right) ||
+		    !rndr_buf(st, ob, n, st->tmp, &sty_imgbox))
+			return 0;
+		return 1;
+	}
+
+	/* Separate between text and link address. */
+
+	hbuf_truncate(st->tmp);
+	if (!hbuf_puts(st->tmp, ifx_imgbox_sep) ||
+	    !rndr_buf(st, ob, n, st->tmp, &sty_imgbox))
+		return 0;
+
+	/* Format link address. */
+
+	if (st->opts & LOWDOWN_TERM_SHORTLINK) {
+		if (!hbuf_shortlink
+		    (st->tmp, &n->rndr_image.link))
+			return 0;
+		if (!rndr_buf(st, ob, n, st->tmp, &sty_imgurl))
+			return 0;
+	} else
+		if (!rndr_buf(st, ob, n, &n->rndr_image.link,
+		    &sty_imgurl))
+			return 0;
+
+	/* Right-bracket and end. */
+
+	hbuf_truncate(st->tmp);
+	if (!hbuf_puts(st->tmp, ifx_imgbox_right) ||
+	    !rndr_buf(st, ob, n, st->tmp, &sty_imgbox))
+		return 0;
+
+	return 1;
+}
+
+/*
  * Adjust the stack of current nodes we're looking at.
  */
 static int
-rndr_stackpos_init(struct term *p, const struct lowdown_node *n)
+rndr_stackpos_init(struct term *st, const struct lowdown_node *n)
 {
 	void	*pp;
 
-	if (p->stackpos >= p->stackmax) {
-		p->stackmax += 256;
-		pp = reallocarray(p->stack,
-			p->stackmax, sizeof(struct tstack));
+	if (st->stackpos >= st->stackmax) {
+		st->stackmax += 256;
+		pp = reallocarray(st->stack,
+			st->stackmax, sizeof(struct tstack));
 		if (pp == NULL)
 			return 0;
-		p->stack = pp;
+		st->stack = pp;
 	}
 
-	memset(&p->stack[p->stackpos], 0, sizeof(struct tstack));
-	p->stack[p->stackpos].n = n;
+	memset(&st->stack[st->stackpos], 0, sizeof(struct tstack));
+	st->stack[st->stackpos].n = n;
 	return 1;
 }
 
@@ -951,14 +1173,13 @@ rndr_stackpos_init(struct term *p, const struct lowdown_node *n)
  * Return zero on failure (memory), non-zero on success.
  */
 static int
-rndr_table(struct lowdown_buf *ob, struct lowdown_metaq *mq,
-	struct term *p, const struct lowdown_node *n)
+rndr_table(struct lowdown_buf *ob, struct term *st,
+	const struct lowdown_node *n)
 {
 	size_t				*widths = NULL;
 	const struct lowdown_node	*row, *top, *cell;
-	struct lowdown_buf		*celltmp = NULL,
-					*rowtmp = NULL;
-	size_t				 col, i, j, maxcol, sz;
+	struct lowdown_buf		*celltmp = NULL, *rowtmp = NULL;
+	size_t				 col, i, j, maxcol, sz, footsz;
 	ssize_t			 	 last_blank;
 	unsigned int			 flags;
 	int				 rc = 0;
@@ -975,8 +1196,14 @@ rndr_table(struct lowdown_buf *ob, struct lowdown_metaq *mq,
 
 	/*
 	 * Begin by counting the number of printable columns in each
-	 * column in each row.
+	 * column in each row.  We don't want to collect additional
+	 * footnotes, as we're going to do so in the next iteration, and
+	 * keep the current size (which will otherwise advance).
 	 */
+
+	assert(!st->footoff);
+	st->footoff = 1;
+	footsz = st->footsz;
 
 	TAILQ_FOREACH(top, &n->children, entries) {
 		assert(top->type == LOWDOWN_TABLE_HEADER ||
@@ -995,22 +1222,28 @@ rndr_table(struct lowdown_buf *ob, struct lowdown_metaq *mq,
 				 * line wrapping.
 				 */
 
-				maxcol = p->maxcol;
-				last_blank = p->last_blank;
-				col = p->col;
+				maxcol = st->width;
+				last_blank = st->last_blank;
+				col = st->col;
 
-				p->last_blank = 0;
-				p->maxcol = SIZE_MAX;
-				p->col = 1;
-				if (!rndr(celltmp, mq, p, cell))
+				st->last_blank = 0;
+				st->width = SIZE_MAX;
+				st->col = 1;
+				if (!rndr(celltmp, st, cell))
 					goto out;
-				if (widths[i] < p->col)
-					widths[i] = p->col;
-				p->last_blank = last_blank;
-				p->col = col;
-				p->maxcol = maxcol;
+				if (widths[i] < st->col)
+					widths[i] = st->col;
+				st->last_blank = last_blank;
+				st->col = col;
+				st->width = maxcol;
 			}
 	}
+
+	/* Restore footnotes. */
+
+	st->footsz = footsz;
+	assert(st->footoff);
+	st->footoff = 0;
 
 	/* Now actually print, row-by-row into the output. */
 
@@ -1022,17 +1255,17 @@ rndr_table(struct lowdown_buf *ob, struct lowdown_metaq *mq,
 			TAILQ_FOREACH(cell, &row->children, entries) {
 				i = cell->rndr_table_cell.col;
 				hbuf_truncate(celltmp);
-				maxcol = p->maxcol;
-				last_blank = p->last_blank;
-				col = p->col;
+				maxcol = st->width;
+				last_blank = st->last_blank;
+				col = st->col;
 
-				p->last_blank = 0;
-				p->maxcol = SIZE_MAX;
-				p->col = 1;
-				if (!rndr(celltmp, mq, p, cell))
+				st->last_blank = 0;
+				st->width = SIZE_MAX;
+				st->col = 1;
+				if (!rndr(celltmp, st, cell))
 					goto out;
-				assert(widths[i] >= p->col);
-				sz = widths[i] - p->col;
+				assert(widths[i] >= st->col);
+				sz = widths[i] - st->col;
 
 				/*
 				 * Alignment is either beginning,
@@ -1067,16 +1300,18 @@ rndr_table(struct lowdown_buf *ob, struct lowdown_metaq *mq,
 							goto out;
 				}
 
-				p->last_blank = last_blank;
-				p->col = col;
-				p->maxcol = maxcol;
+				st->last_blank = last_blank;
+				st->col = col;
+				st->width = maxcol;
 
 				if (TAILQ_NEXT(cell, entries) == NULL)
 					continue;
 
-				if (!rndr_buf_style(p, rowtmp, &sty_table) ||
-				    !hbuf_printf(rowtmp, " %s ", ifx_table_col) ||
-				    !rndr_buf_unstyle(p, rowtmp, &sty_table))
+				if (!HBUF_PUTSL(rowtmp, " ") ||
+				    !rndr_buf_style(st, rowtmp, &sty_tbl) ||
+				    !hbuf_puts(rowtmp, ifx_tbl_col) ||
+				    !rndr_buf_unstyle(st, rowtmp, &sty_tbl) ||
+				    !HBUF_PUTSL(rowtmp, " "))
 					goto out;
 			}
 
@@ -1090,42 +1325,64 @@ rndr_table(struct lowdown_buf *ob, struct lowdown_metaq *mq,
 			 * our own.  Then end the line.
 			 */
 
-			p->stackpos++;
-			if (!rndr_stackpos_init(p, n))
+			st->stackpos++;
+			if (!rndr_stackpos_init(st, n))
 				goto out;
-			if (!rndr_buf_startline(p, ob, n, NULL))
+			if (!rndr_buf_startline(st, ob, n, NULL))
 				goto out;
 			if (!hbuf_putb(ob, rowtmp))
 				goto out;
-			rndr_buf_advance(p, 1);
-			if (!rndr_buf_endline(p, ob, n, NULL))
+			rndr_buf_advance(st, 1);
+			if (!rndr_buf_endline(st, ob, n, NULL))
 				goto out;
-			if (!rndr_buf_vspace(p, ob, n, 1))
+			if (!rndr_buf_vspace(st, ob, n, 1))
 				goto out;
-			p->stackpos--;
+			st->stackpos--;
 		}
 
 		if (top->type == LOWDOWN_TABLE_HEADER) {
-			p->stackpos++;
-			if (!rndr_stackpos_init(p, n))
+			st->stackpos++;
+			if (!rndr_stackpos_init(st, n))
 				goto out;
-			if (!rndr_buf_startline(p, ob, n, &sty_table))
+			if (!rndr_buf_startline(st, ob, n, &sty_tbl))
 				goto out;
+
+			/*
+			 * Output the row line.  This consists of:
+			 *
+			 *   inter    padding
+			 *       |    | |
+			 *       |    | |
+			 *   ----+-----+-----
+			 *   xyz   xyz   xyz
+			 *   |     |
+			 *   content
+			 *
+			 * So starting with the content, ending with a
+			 * padding of one byte (encompassed in the
+			 * width), the inter mark or nothing if at the
+			 * end, then another padding or nothing if at
+			 * the end.
+			 */
 			for (i = 0; i < n->rndr_table.columns; i++) {
+				/* Pre-padding. */
+				if (i > 0 && !hbuf_puts(ob, ifx_tbl_row))
+					goto out;
+				/* Content and post-padding. */
 				for (j = 0; j < widths[i]; j++)
-					if (!hbuf_puts(ob, ifx_table_row))
+					if (!hbuf_puts(ob, ifx_tbl_row))
 						goto out;
+				/* Inter. */
 				if (i < n->rndr_table.columns - 1 &&
-				    !hbuf_printf(ob, "%s%s",
-				    ifx_table_col, ifx_table_row))
+				    !hbuf_puts(ob, ifx_tbl_mcol))
 					goto out;
 			}
-			rndr_buf_advance(p, 1);
-			if (!rndr_buf_endline(p, ob, n, &sty_table))
+			rndr_buf_advance(st, 1);
+			if (!rndr_buf_endline(st, ob, n, &sty_tbl))
 				goto out;
-			if (!rndr_buf_vspace(p, ob, n, 1))
+			if (!rndr_buf_vspace(st, ob, n, 1))
 				goto out;
-			p->stackpos--;
+			st->stackpos--;
 		}
 	}
 
@@ -1137,21 +1394,121 @@ out:
 	return rc;
 }
 
+/*
+ * Output a title-value pair.  If "multi" is specified, break up into
+ * multiple title-value lines.
+ *
+ * Return zero on failure (memory), non-zero otherwise.
+ */
 static int
-rndr(struct lowdown_buf *ob, struct lowdown_metaq *mq,
-	struct term *p, const struct lowdown_node *n)
+rndr_doc_header_meta(struct lowdown_buf *ob, struct term *st,
+	const struct lowdown_node *n, const char *title,
+	const char *value, int multi)
 {
-	const struct lowdown_node	*child, *nn;
-	struct lowdown_meta		*m;
+	const char	*start, *end;
+
+	for (start = value; *start != '\0';) {
+		if (multi) {
+			for (end = start + 1; *end != '\0'; end++)
+				if (isspace((unsigned char)end[0]) &&
+				    isspace((unsigned char)end[1]))
+					break;
+		} else
+			end = start + strlen(start);
+
+		if (!rndr_buf_vspace(st, ob, n, 1))
+			return 0;
+		hbuf_truncate(st->tmp);
+		if (!hbuf_puts(st->tmp, title) ||
+		    !rndr_buf(st, ob, n, st->tmp, &sty_meta_key))
+			return 0;
+		hbuf_truncate(st->tmp);
+		if (!hbuf_puts(st->tmp, ifx_meta_key) ||
+		    !rndr_buf(st, ob, n, st->tmp, &sty_meta_key))
+			return 0;
+		hbuf_truncate(st->tmp);
+		if (!hbuf_put(st->tmp, start, (size_t)(end - start)) ||
+		    !rndr_buf(st, ob, n, st->tmp, NULL))
+			return 0;
+
+		start = end;
+		while (*start != '\0' && isspace((unsigned char)*start))
+			start++;
+	}
+
+	return 1;
+}
+
+/*
+ * Conditionally emit a document header containing the title, author,
+ * and date.
+ */
+static int
+rndr_doc_header(struct lowdown_buf *ob, struct term *st,
+	const struct lowdown_node *n)
+{
+	const char			*title = NULL, *author = NULL,
+	      				*date = NULL, *rcsdate = NULL,
+					*rcsauthor = NULL;
+	const struct lowdown_meta	*m;
+
+	if (!(st->opts & LOWDOWN_STANDALONE))
+		return 1;
+
+	if (st->opts & LOWDOWN_TERM_ALL_META) {
+		TAILQ_FOREACH(m, &st->metaq, entries)
+			if (!rndr_doc_header_meta(ob, st, n, m->key,
+			    m->value, 0))
+				return 0;
+		return 1;
+	}
+
+	TAILQ_FOREACH(m, &st->metaq, entries)
+		if (strcasecmp(m->key, "title") == 0)
+			title = m->value;
+		else if (strcasecmp(m->key, "author") == 0)
+			author = m->value;
+		else if (strcasecmp(m->key, "date") == 0)
+			date = m->value;
+		else if (strcasecmp(m->key, "rcsauthor") == 0)
+			rcsauthor = rcsauthor2str(m->value);
+		else if (strcasecmp(m->key, "rcsdate") == 0)
+			rcsdate = rcsdate2str(m->value);
+
+	/* Overrides. */
+
+	if (rcsdate != NULL)
+		date = rcsdate;
+	if (rcsauthor != NULL)
+		author = rcsauthor;
+
+	if (title != NULL &&
+	    !rndr_doc_header_meta(ob, st, n, "title", title, 0))
+		return 0;
+	if (author != NULL &&
+	    !rndr_doc_header_meta(ob, st, n, "author", author, 1))
+		return 0;
+	if (date != NULL &&
+	    !rndr_doc_header_meta(ob, st, n, "date", date, 0))
+		return 0;
+
+	return 1;
+}
+
+static int
+rndr(struct lowdown_buf *ob, struct term *st,
+	const struct lowdown_node *n)
+{
+	const struct lowdown_node	*child, *nn, *in_link = st->in_link;
 	struct lowdown_buf		*metatmp;
-	int32_t				 entity;
+	void				*pp;
 	size_t				 i, col, vs;
 	ssize_t			 	 last_blank;
-	int				 rc;
+	int32_t				 entity;
 
 	/* Current nodes we're servicing. */
 
-	if (!rndr_stackpos_init(p, n))
+	if (!rndr_stackpos_init(st, n))
 		return 0;
 
 	/*
@@ -1165,18 +1522,16 @@ rndr(struct lowdown_buf *ob, struct lowdown_metaq *mq,
 	vs = 0;
 	switch (n->type) {
 	case LOWDOWN_ROOT:
-		for (i = 0; i < p->vmargin; i++)
+		for (i = 0; i < st->vmargin; i++)
 			if (!HBUF_PUTSL(ob, "\n"))
 				return 0;
-		p->last_blank = -1;
+		st->last_blank = -1;
 		break;
 	case LOWDOWN_BLOCKCODE:
 	case LOWDOWN_BLOCKHTML:
 	case LOWDOWN_BLOCKQUOTE:
 	case LOWDOWN_DEFINITION:
 	case LOWDOWN_DEFINITION_TITLE:
-	case LOWDOWN_FOOTNOTES_BLOCK:
-	case LOWDOWN_FOOTNOTE_DEF:
 	case LOWDOWN_HEADER:
 	case LOWDOWN_LIST:
 	case LOWDOWN_TABLE_BLOCK:
@@ -1193,10 +1548,11 @@ rndr(struct lowdown_buf *ob, struct lowdown_metaq *mq,
 		vs = n->rndr_math.blockmode ? 1 : 0;
 		break;
 	case LOWDOWN_DEFINITION_DATA:
-	case LOWDOWN_HRULE:
 	case LOWDOWN_LINEBREAK:
-	case LOWDOWN_META:
 		vs = 1;
+		break;
+	case LOWDOWN_HRULE:
+		vs = 2;
 		break;
 	case LOWDOWN_LISTITEM:
 		vs = 1;
@@ -1212,70 +1568,25 @@ rndr(struct lowdown_buf *ob, struct lowdown_metaq *mq,
 		break;
 	}
 
-	if (vs > 0 && !rndr_buf_vspace(p, ob, n, vs))
+	if (vs > 0 && !rndr_buf_vspace(st, ob, n, vs))
 		return 0;
 
 	/* Output leading content. */
 
 	switch (n->type) {
-	case LOWDOWN_FOOTNOTES_BLOCK:
-		hbuf_truncate(p->tmp);
-		if (!hbuf_puts(p->tmp, ifx_foot) ||
-		    !rndr_buf(p, ob, n, p->tmp, &sty_foot))
-			return 0;
+	case LOWDOWN_IMAGE:
+	case LOWDOWN_LINK:
+	case LOWDOWN_LINK_AUTO:
+		st->in_link = n;
 		break;
 	case LOWDOWN_SUPERSCRIPT:
-		hbuf_truncate(p->tmp);
-		if (!hbuf_puts(p->tmp, ifx_super) ||
-		    !rndr_buf(p, ob, n, p->tmp, NULL))
-			return 0;
-		break;
-	case LOWDOWN_META:
-		if (!rndr_buf(p, ob, n,
-		    &n->rndr_meta.key, &sty_meta_key))
-			return 0;
-		hbuf_truncate(p->tmp);
-		if (!hbuf_puts(p->tmp, ifx_meta_key) ||
-		    !rndr_buf(p, ob, n, p->tmp, &sty_meta_key))
-			return 0;
-		if (mq == NULL)
-			break;
-
 		/*
-		 * Manually render the children of the meta into a
-		 * buffer and use that as our value.  Start by zeroing
-		 * our terminal position and using another output buffer
-		 * (p->tmp would be clobbered by children).
+		 * Output the superscript character.
 		 */
-
-		last_blank = p->last_blank;
-		p->last_blank = -1;
-		col = p->col;
-		p->col = 0;
-		m = calloc(1, sizeof(struct lowdown_meta));
-		if (m == NULL)
+		hbuf_truncate(st->tmp);
+		if (!hbuf_puts(st->tmp, ifx_super) ||
+		    !rndr_buf(st, ob, n, st->tmp, NULL))
 			return 0;
-		TAILQ_INSERT_TAIL(mq, m, entries);
-		m->key = strndup(n->rndr_meta.key.data,
-			n->rndr_meta.key.size);
-		if (m->key == NULL)
-			return 0;
-		if ((metatmp = hbuf_new(128)) == NULL)
-			return 0;
-		TAILQ_FOREACH(child, &n->children, entries) {
-			p->stackpos++;
-			if (!rndr(metatmp, mq, p, child)) {
-				hbuf_free(metatmp);
-				return 0;
-			}
-			p->stackpos--;
-		}
-		m->value = strndup(metatmp->data, metatmp->size);
-		hbuf_free(metatmp);
-		if (m->value == NULL)
-			return 0;
-		p->last_blank = last_blank;
-		p->col = col;
 		break;
 	default:
 		break;
@@ -1283,149 +1594,207 @@ rndr(struct lowdown_buf *ob, struct lowdown_metaq *mq,
 
 	/* Descend into children. */
 
-	if (n->type != LOWDOWN_TABLE_BLOCK) {
-		TAILQ_FOREACH(child, &n->children, entries) {
-			p->stackpos++;
-			if (!rndr(ob, mq, p, child))
-				return 0;
-			p->stackpos--;
+	switch (n->type) {
+	case LOWDOWN_FOOTNOTE:
+		if (st->footoff) {
+			st->footsz++;
+			break;
 		}
-	} else if (!rndr_table(ob, mq, p, n))
-		return 0;
+		last_blank = st->last_blank;
+		st->last_blank = -1;
+		col = st->col;
+		st->col = 0;
+		if ((metatmp = hbuf_new(128)) == NULL)
+			return 0;
+		TAILQ_FOREACH(child, &n->children, entries) {
+			st->stackpos++;
+			if (!rndr(metatmp, st, child))
+				return 0;
+			st->stackpos--;
+		}
+		st->last_blank = last_blank;
+		st->col = col;
+		pp = recallocarray(st->foots, st->footsz,
+			st->footsz + 1, sizeof(struct lowdown_buf *));
+		if (pp == NULL)
+			return 0;
+		st->foots = pp;
+		st->foots[st->footsz++] = metatmp;
+		break;
+	case LOWDOWN_TABLE_BLOCK:
+		if (!rndr_table(ob, st, n))
+			return 0;
+		break;
+	case LOWDOWN_META:
+		if (lowdown_get_meta(n, &st->metaq) == NULL)
+			return 0;
+		break;
+	default:
+		TAILQ_FOREACH(child, &n->children, entries) {
+			st->stackpos++;
+			if (!rndr(ob, st, child))
+				return 0;
+			st->stackpos--;
+		}
+		break;
+	}
 
 	/* Output content. */
 
-	rc = 1;
 	switch (n->type) {
-	case LOWDOWN_HRULE:
-		hbuf_truncate(p->tmp);
-		if (!hbuf_puts(p->tmp, ifx_hrule))
+	case LOWDOWN_DOC_HEADER:
+		if (!rndr_doc_header(ob, st, n))
 			return 0;
-		rc = rndr_buf(p, ob, n, p->tmp, NULL);
 		break;
-	case LOWDOWN_FOOTNOTE_REF:
-		hbuf_truncate(p->tmp);
-		if (!hbuf_printf(p->tmp, "%s%zu%s", ifx_fref_left,
-		    n->rndr_footnote_ref.num, ifx_fref_right))
+	case LOWDOWN_HRULE:
+		if (!rndr_hrule(st, ob, ifx_hrule, n, NULL))
 			return 0;
-		rc = rndr_buf(p, ob, n, p->tmp, NULL);
+		break;
+	case LOWDOWN_FOOTNOTE:
+		hbuf_truncate(st->tmp);
+		if (!hbuf_printf(st->tmp, "%s%zu%s", ifx_fref_left,
+		    st->footsz, ifx_fref_right))
+			return 0;
+		if (!rndr_buf(st, ob, n, st->tmp, &sty_fref))
+			return 0;
 		break;
 	case LOWDOWN_RAW_HTML:
-		rc = rndr_buf(p, ob, n, &n->rndr_raw_html.text, NULL);
+		if (!rndr_buf(st, ob, n, &n->rndr_raw_html.text, NULL))
+			return 0;
 		break;
 	case LOWDOWN_MATH_BLOCK:
-		rc = rndr_buf(p, ob, n, &n->rndr_math.text, NULL);
+		if (!rndr_buf(st, ob, n, &n->rndr_math.text, NULL))
+			return 0;
 		break;
 	case LOWDOWN_ENTITY:
 		entity = entity_find_iso(&n->rndr_entity.text);
 		if (entity > 0) {
-			hbuf_truncate(p->tmp);
-			if (!rndr_entity(p->tmp, entity))
+			hbuf_truncate(st->tmp);
+			if (!rndr_entity(st->tmp, entity))
 				return 0;
-			rc = rndr_buf(p, ob, n, p->tmp, NULL);
-		} else
-			rc = rndr_buf(p, ob, n, &n->rndr_entity.text,
-				&sty_bad_ent);
+			if (!rndr_buf(st, ob, n, st->tmp, NULL))
+				return 0;
+		} else {
+			if (!rndr_buf(st, ob, n,
+			     &n->rndr_entity.text, &sty_bad_ent))
+				return 0;
+		}
 		break;
 	case LOWDOWN_BLOCKCODE:
-		rc = rndr_buf(p, ob, n, &n->rndr_blockcode.text, NULL);
+		if (!rndr_buf(st, ob, n, &n->rndr_blockcode.text, NULL))
+			return 0;
 		break;
 	case LOWDOWN_BLOCKHTML:
-		rc = rndr_buf(p, ob, n, &n->rndr_blockhtml.text, NULL);
+		if (!rndr_buf(st, ob, n, &n->rndr_blockhtml.text, NULL))
+			return 0;
 		break;
 	case LOWDOWN_CODESPAN:
-		rc = rndr_buf(p, ob, n, &n->rndr_codespan.text, NULL);
+		if (!rndr_buf(st, ob, n, &n->rndr_codespan.text, NULL))
+			return 0;
 		break;
 	case LOWDOWN_LINK_AUTO:
-		if (p->opts & LOWDOWN_TERM_SHORTLINK) {
-			hbuf_truncate(p->tmp);
+		if (st->opts & LOWDOWN_TERM_SHORTLINK) {
+			hbuf_truncate(st->tmp);
 			if (!hbuf_shortlink
-			    (p->tmp, &n->rndr_autolink.link))
+			    (st->tmp, &n->rndr_autolink.link))
 				return 0;
-			rc = rndr_buf(p, ob, n, p->tmp, NULL);
-		} else
-			rc = rndr_buf(p, ob, n, &n->rndr_autolink.link, NULL);
+			if (!rndr_buf(st, ob, n, st->tmp, NULL))
+				return 0;
+		} else {
+			if (!rndr_buf(st, ob, n,
+			     &n->rndr_autolink.link, NULL))
+				return 0;
+		}
 		break;
 	case LOWDOWN_LINK:
-		if (p->opts & LOWDOWN_TERM_NOLINK)
+		/*
+		 * The child content of the link has already been
+		 * produced to the output buffer.  Inhibit printing the
+		 * link address if requested for all links or if a
+		 * relative address and requested only for those.
+		 */
+
+		if ((st->opts & LOWDOWN_TERM_NOLINK) ||
+		    ((st->opts & LOWDOWN_TERM_NORELLINK) &&
+		     link_isrelative(&n->rndr_link.link)))
 			break;
-		hbuf_truncate(p->tmp);
-		if (!HBUF_PUTSL(p->tmp, " "))
+
+		/* Separate between text and link address. */
+
+		hbuf_truncate(st->tmp);
+		if (!hbuf_puts(st->tmp, ifx_link_sep) ||
+		    !rndr_buf(st, ob, n, st->tmp, NULL))
 			return 0;
-		if (!rndr_buf(p, ob, n, p->tmp, NULL))
-			return 0;
-		if (p->opts & LOWDOWN_TERM_SHORTLINK) {
-			hbuf_truncate(p->tmp);
+
+		/* Format the link address. */
+
+		if (st->opts & LOWDOWN_TERM_SHORTLINK) {
+			hbuf_truncate(st->tmp);
 			if (!hbuf_shortlink
-			    (p->tmp, &n->rndr_link.link))
+			    (st->tmp, &n->rndr_link.link))
 				return 0;
-			rc = rndr_buf(p, ob, n, p->tmp, NULL);
-		} else
-			rc = rndr_buf(p, ob, n, &n->rndr_link.link, NULL);
+			if (!rndr_buf(st, ob, n, st->tmp, NULL))
+				return 0;
+		} else {
+			if (!rndr_buf(st, ob, n,
+			     &n->rndr_link.link, NULL))
+				return 0;
+		}
 		break;
 	case LOWDOWN_IMAGE:
-		if (!rndr_buf(p, ob, n, &n->rndr_image.alt, NULL))
+		if (!rndr_image(st, ob, n))
 			return 0;
-		if (n->rndr_image.alt.size) {
-			hbuf_truncate(p->tmp);
-			if (!HBUF_PUTSL(p->tmp, " "))
-				return 0;
-			if (!rndr_buf(p, ob, n, p->tmp, NULL))
-				return 0;
-		}
-		if (p->opts & LOWDOWN_TERM_NOLINK) {
-			hbuf_truncate(p->tmp);
-			if (!hbuf_puts(p->tmp, ifx_imgbox_left) ||
-			    !hbuf_puts(p->tmp, ifx_imgbox_right))
-				return 0;
-			rc = rndr_buf(p, ob, n, p->tmp, &sty_imgbox);
-			break;
-		}
-		hbuf_truncate(p->tmp);
-		if (!hbuf_puts(p->tmp, ifx_imgbox_left) ||
-		    !hbuf_puts(p->tmp, ifx_imgbox_sep) ||
-		    !rndr_buf(p, ob, n, p->tmp, &sty_imgbox))
-			return 0;
-		if (p->opts & LOWDOWN_TERM_SHORTLINK) {
-			hbuf_truncate(p->tmp);
-			if (!hbuf_shortlink
-			    (p->tmp, &n->rndr_image.link))
-				return 0;
-			if (!rndr_buf(p, ob, n, p->tmp, &sty_imgurl))
-				return 0;
-		} else
-			if (!rndr_buf(p, ob, n,
-			    &n->rndr_image.link, &sty_imgurl))
-				return 0;
-		hbuf_truncate(p->tmp);
-		if (!hbuf_puts(p->tmp, ifx_imgbox_right))
-			return 0;
-		rc = rndr_buf(p, ob, n, p->tmp, &sty_imgbox);
 		break;
 	case LOWDOWN_NORMAL_TEXT:
-		rc = rndr_buf(p, ob, n, &n->rndr_normal_text.text, NULL);
+		if (!rndr_buf(st, ob, n, &n->rndr_normal_text.text,
+		    NULL))
+			return 0;
 		break;
 	default:
 		break;
 	}
-	if (!rc)
-		return 0;
 
-	/* Trailing block spaces. */
+	switch (n->type) {
+	case LOWDOWN_IMAGE:
+	case LOWDOWN_LINK:
+	case LOWDOWN_LINK_AUTO:
+		st->in_link = in_link;
+		break;
+	case LOWDOWN_ROOT:
+		/*
+		 * If there are footnotes, begin by offsetting with
+		 * vertical space.  Then, if there's a footnote block
+		 * header, output that followed by vertical space.
+		 * Lastly, output the footnotes themselves.
+		 */
 
-	if (n->type == LOWDOWN_ROOT) {
-		if (!rndr_buf_vspace(p, ob, n, 1))
+		if (st->footsz && !rndr_buf_vspace(st, ob, n, 2))
 			return 0;
+		if (st->footsz) {
+			if (!rndr_hrule(st, ob, ifx_foot, n, &sty_foot))
+				return 0;
+			if (!rndr_buf_vspace(st, ob, n, 2))
+				return 0;
+		}
+		for (i = 0; i < st->footsz; i++)
+			if (!hbuf_putb(ob, st->foots[i]) ||
+			    !HBUF_PUTSL(ob, "\n"))
+				return 0;
+		if (!rndr_buf_vspace(st, ob, n, 1))
+			return 0;
+
+		/* Strip trailing newlines but for the vmargin. */
+
 		while (ob->size && ob->data[ob->size - 1] == '\n')
 			ob->size--;
 		if (!HBUF_PUTSL(ob, "\n"))
 			return 0;
-
-		/* Strip breaks but for the vmargin. */
-
-		for (i = 0; i < p->vmargin; i++)
+		for (i = 0; i < st->vmargin; i++)
 			if (!HBUF_PUTSL(ob, "\n"))
 				return 0;
+		break;
+	default:
+		break;
 	}
 
 	return 1;
@@ -1435,55 +1804,81 @@ int
 lowdown_term_rndr(struct lowdown_buf *ob,
 	void *arg, const struct lowdown_node *n)
 {
-	struct term		*p = arg;
-	struct lowdown_metaq	 metaq;
-	int			 rc;
+	struct term	*st = arg;
+	int		 rc;
 
-	TAILQ_INIT(&metaq);
-
-	p->stackpos = 0;
-
-	rc = rndr(ob, &metaq, p, n);
-
-	lowdown_metaq_free(&metaq);
+	TAILQ_INIT(&st->metaq);
+	st->stackpos = 0;
+	st->in_link = NULL;
+	rc = rndr(ob, st, n);
+	rndr_free_footnotes(st);
+	lowdown_metaq_free(&st->metaq);
 	return rc;
 }
 
 void *
 lowdown_term_new(const struct lowdown_opts *opts)
 {
-	struct term	*p;
+	struct term	*st;
 
-	if ((p = calloc(1, sizeof(struct term))) == NULL)
+	if ((st = calloc(1, sizeof(struct term))) == NULL)
 		return NULL;
-
-	/* Give us 80 columns by default. */
 
 	if (opts != NULL) {
-		p->maxcol = opts->cols == 0 ? 80 : opts->cols;
-		p->hmargin = opts->hmargin;
-		p->vmargin = opts->vmargin;
-		p->opts = opts->oflags;
-	} else
-		p->maxcol = 80;
+		/*
+		 * Compute the width of the content pre-padding.  If
+		 * zero, limit to 80 or the number of terminal columns.
+		 * Otherwise, truncate to the number of columns.
+		 */
 
-	if ((p->tmp = hbuf_new(32)) == NULL) {
-		free(p);
+		if (opts->term.width == 0) {
+			if ((st->width = opts->term.cols) > 80)
+				st->width = 80;
+		} else if (opts->term.width > opts->term.cols) {
+			st->width = opts->term.cols;
+		} else
+			st->width = opts->term.width;
+
+		/*
+		 * Compute the horizontal margin: either as given or, if
+		 * centred, computed from the content width.
+		 */
+
+		if (opts->term.centre && st->width < opts->term.cols)
+			st->hmargin = (opts->term.cols - st->width) / 2;
+		else
+			st->hmargin = opts->term.hmargin;
+
+		st->hpadding = opts->term.hpadding;
+		st->vmargin = opts->term.vmargin;
+		st->opts = opts->oflags;
+	} else {
+		st->width = 80;
+		st->hpadding = 4;
+	}
+
+	if (st->hpadding >= st->width)
+		st->width = 1;
+	else
+		st->width -= st->hpadding;
+
+	if ((st->tmp = hbuf_new(32)) == NULL) {
+		free(st);
 		return NULL;
 	}
-	return p;
+	return st;
 }
 
 void
 lowdown_term_free(void *arg)
 {
-	struct term	*p = arg;
-	
-	if (p == NULL)
+	struct term	*st = arg;
+
+	if (st == NULL)
 		return;
 
-	hbuf_free(p->tmp);
-	free(p->buf);
-	free(p->stack);
-	free(p);
+	hbuf_free(st->tmp);
+	free(st->buf);
+	free(st->stack);
+	free(st);
 }

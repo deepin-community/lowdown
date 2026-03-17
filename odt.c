@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021 Kristaps Dzonsons <kristaps@bsd.lv>
+ * Copyright (c) Kristaps Dzonsons <kristaps@bsd.lv>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -50,11 +50,7 @@ static const float TAB_LEN = 1.25;
 static const float LIST_LEN = 1.27;
 
 /*
- * A style in <office:styles> or <office-automatic-styles>.  The
- * difference between these two, according to section 3.15 of the v1.3,
- * is that automatic styles are ad hoc and regular styles are linked to
- * a central style that may be changed.  Span styles are in-line, blocks
- * can have offsets.
+ * A style in <office-automatic-styles>.
  */
 struct	odt_sty {
 	char			 name[STYLE_NAME_LEN]; /* name */
@@ -73,7 +69,6 @@ struct	odt_sty {
 #define	ODT_STY_TBL		 8 /* table */
 #define ODT_STY_TBL_PARA	 9 /* table contents */
 #define	ODT_STY_LIT		 10 /* literal */
-	int			 autosty; /* automatic-style? */
 };
 
 /*
@@ -89,6 +84,7 @@ struct	odt_chng {
  * keeps output state in terms of the styles that need printing.
  */
 struct 	odt {
+	struct hentryq	 	 headers_used; /* headers we've seen */
 	ssize_t			 headers_offs; /* header offset */
 	unsigned int 		 flags; /* "oflags" in lowdown_opts */
 	struct odt_sty		*stys; /* styles for content */
@@ -100,9 +96,10 @@ struct 	odt {
 	size_t			 offs; /* offs or (size_t)-1 in list */
 	size_t			 list; /* root list style or (size_t)-1 */
 	int			 foot; /* in footnote or not */
-	const struct lowdown_node *foots; /* footnotes */
+	size_t			 footcount; /* footnote */
 	struct odt_chng		*chngs; /* changes in content */
 	size_t			 chngsz; /* number of changes */
+	char			*sty; /* external styles or NULL */
 };
 
 static int rndr(struct lowdown_buf *,
@@ -148,21 +145,7 @@ odt_style_add_text(struct odt *st, enum lowdown_rndrt type)
 
 	s->fmt = ODT_STY_TEXT;
 	s->type = type;
-
-	/* Codespans and links are fixed, the rest are automatic. */
-
-	switch (type) {
-	case LOWDOWN_CODESPAN:
-		strlcpy(s->name, "Source_20_Text", sizeof(s->name));
-		break;
-	case LOWDOWN_LINK:
-		strlcpy(s->name, "Internet_20_link", sizeof(s->name));
-		break;
-	default:
-		s->autosty = 1;
-		snprintf(s->name, sizeof(s->name), "T%zu", st->sty_T++);
-		break;
-	}
+	snprintf(s->name, sizeof(s->name), "T%zu", st->sty_T++);
 	return s->name;
 }
 
@@ -261,28 +244,6 @@ odt_sty_flush(struct lowdown_buf *ob,
 		break;
 	}
 
-	switch (sty->type) {
-	case LOWDOWN_LINK:
-		if (!HBUF_PUTSL(ob,
-		    " style:display-name=\"Internet Link\""))
-			return 0;
-		break;
-	case LOWDOWN_CODESPAN:
-		if (!HBUF_PUTSL(ob,
-		    " style:display-name=\"Source Text\""))
-			return 0;
-		break;
-	case LOWDOWN_HRULE:
-		if (!HBUF_PUTSL(ob,
-		    " style:display-name=\"Horizontal Line\""
-		    " style:next-style-name=\"Text_20_body\""
-		    " style:class=\"html\""))
-			return 0;
-		break;
-	default:
-		break;
-	}
-
 	if (!HBUF_PUTSL(ob, ">\n"))
 		return 0;
 
@@ -299,27 +260,6 @@ odt_sty_flush(struct lowdown_buf *ob,
 		    " fo:margin-right=\"0cm\""
 		    " table:align=\"margins\"/>\n",
 		    sty->offs * TAB_LEN))
-			return 0;
-		break;
-	case LOWDOWN_HRULE:
-		if (!HBUF_PUTSL(ob,
-		    "<style:paragraph-properties"
-		    " fo:margin-top=\"0cm\""
-		    " fo:margin-bottom=\"0.499cm\""
-		    " style:contextual-spacing=\"false\""
-		    " style:border-line-width-bottom=\"0.002cm 0.004cm 0.002cm\""
-		    " fo:padding=\"0cm\""
-		    " fo:border-left=\"none\""
-		    " fo:border-right=\"none\""
-		    " fo:border-top=\"none\""
-		    " fo:border-bottom=\"0.14pt double #808080\""
-		    " text:number-lines=\"false\""
-		    " text:line-number=\"0\""
-		    " style:join-border=\"false\"/>\n"
-   		    "<style:text-properties"
-		    " fo:font-size=\"6pt\""
-		    " style:font-size-asian=\"6pt\""
-		    " style:font-size-complex=\"6pt\"/>\n"))
 			return 0;
 		break;
 	case LOWDOWN_HEADER:
@@ -383,45 +323,16 @@ odt_sty_flush(struct lowdown_buf *ob,
 				return 0;
 		}
 		break;
+	case LOWDOWN_SUBSCRIPT:
+		if (!HBUF_PUTSL(ob,
+		    "<style:text-properties"
+		    " style:text-position=\"sub 58%\"/>\n"))
+			return 0;
+		break;
 	case LOWDOWN_SUPERSCRIPT:
 		if (!HBUF_PUTSL(ob,
 		    "<style:text-properties"
 		    " style:text-position=\"super 58%\"/>\n"))
-			return 0;
-		break;
-	case LOWDOWN_CODESPAN:
-		if (!HBUF_PUTSL(ob,
-		    "<style:text-properties"
-		    " style:font-name=\"Liberation Mono\""
-		    " fo:font-family=\"&apos;Liberation Mono&apos;\""
-		    " style:font-family-generic=\"modern\""
-		    " style:font-pitch=\"fixed\""
-		    " style:font-name-asian=\"Liberation Mono\""
-		    " style:font-family-asian="
-		     "\"&apos;Liberation Mono&apos;\""
-		    " style:font-family-generic-asian=\"modern\""
-		    " style:font-pitch-asian=\"fixed\""
-		    " style:font-name-complex=\"Liberation Mono\""
-		    " style:font-family-complex="
-		     "\"&apos;Liberation Mono&apos;\""
-		    " style:font-family-generic-complex=\"modern\""
-		    " style:font-pitch-complex=\"fixed\"/>\n"))
-			return 0;
-		break;
-	case LOWDOWN_LINK:
-		if (!HBUF_PUTSL(ob,
-		    "<style:text-properties"
-   		    " fo:color=\"#000080\""
-		    " loext:opacity=\"100%\""
-		    " fo:language=\"zxx\""
-		    " fo:country=\"none\""
-		    " style:language-asian=\"zxx\""
-		    " style:country-asian=\"none\""
-		    " style:language-complex=\"zxx\""
-		    " style:country-complex=\"none\""
-   		    " style:text-underline-style=\"solid\""
-   		    " style:text-underline-color=\"font-color\""
-		    " style:text-underline-width=\"auto\"/>\n"))
 			return 0;
 		break;
 	case LOWDOWN_TRIPLE_EMPHASIS:
@@ -490,57 +401,36 @@ odt_sty_flush(struct lowdown_buf *ob,
 static int
 odt_styles_flush_fixed(struct lowdown_buf *ob, const struct odt *st)
 {
-	size_t	 i;
-	int	 xlink = 0, ulist = 0, olist = 0,
-		 h1 = 0, h2 = 0, h3 = 0, hr = 0, tab = 0,
-		 lit = 0;
-	
-	/*
-	 * Many styles and auto-styles depend upon fixed parent styles,
-	 * for example, a paragraph auto-style has a parent style that's
-	 * fixed.  Determine which of these static styles we need by
-	 * looking through what styles we're going to output.
-	 */
 
-	for (i = 0; i < st->stysz; i++)
-		switch (st->stys[i].type) {
-		case LOWDOWN_TABLE_BLOCK:
-			tab = 1;
-			break;
-		case LOWDOWN_PARAGRAPH:
-			if (st->stys[i].fmt == ODT_STY_LIT)
-				lit = 1;
-			break;
-		case LOWDOWN_HRULE:
-			hr = 1;
-			break;
-		case LOWDOWN_LINK:
-			xlink = 1;
-			break;
-		case LOWDOWN_HEADER:
-			if (st->stys[i].fmt == ODT_STY_H1)
-				h1 = 1;
-			else if (st->stys[i].fmt == ODT_STY_H2)
-				h2 = 1;
-			else if (st->stys[i].fmt == ODT_STY_H3)
-				h3 = 1;
-			break;
-		case LOWDOWN_LIST:
-			if (st->stys[i].fmt == ODT_STY_UL)
-				ulist = 1;
-			if (st->stys[i].fmt == ODT_STY_OL)
-				olist = 1;
-			break;
-		default:
-			break;
-		}
+	if (st->sty != NULL)
+		return hbuf_puts(ob, st->sty);
+
+	if (!HBUF_PUTSL(ob,
+	    "<office:font-face-decls>\n"
+  	    "<style:font-face style:name=\"OpenSymbol\""
+	    " svg:font-family=\"OpenSymbol\""
+	    " style:font-charset=\"x-symbol\"/>\n"
+	    "<style:font-face style:name=\"Liberation Mono\""
+	    " svg:font-family=\"&apos;Liberation Mono&apos;\""
+	    " style:font-family-generic=\"modern\""
+	    " style:font-pitch=\"fixed\"/>\n"
+	    "<style:font-face style:name=\"Liberation Serif\""
+	    " svg:font-family=\"&apos;Liberation Serif&apos;\""
+	    " style:font-family-generic=\"roman\""
+	    " style:font-pitch=\"variable\"/>\n"
+	    "<style:font-face style:name=\"Liberation Sans\""
+	    " svg:font-family=\"&apos;Liberation Sans&apos;\""
+	    " style:font-family-generic=\"swiss\""
+	    " style:font-pitch=\"variable\"/>\n"
+	    "</office:font-face-decls>\n"))
+		return 0;
 
 	/*
 	 * This doesn't appear to make a difference if it's specified or
 	 * not, but I'm adding it because libreoffice does.
 	 */
 
-	if (xlink && !HBUF_PUTSL(ob,
+	if (!HBUF_PUTSL(ob,
 	    "<office:scripts>\n"
 	    " <office:script script:language=\"ooo:Basic\">\n"
 	    "  <ooo:libraries xmlns:ooo=\"http://openoffice.org/2004/office\""
@@ -552,7 +442,7 @@ odt_styles_flush_fixed(struct lowdown_buf *ob, const struct odt *st)
 	if (!HBUF_PUTSL(ob, "<office:styles>\n"))
 		return 0;
 
-	/* Emit boilerplate parent styles. */
+	/* Baseline. */
 
   	if (!HBUF_PUTSL(ob,
   	    "<style:style"
@@ -560,7 +450,123 @@ odt_styles_flush_fixed(struct lowdown_buf *ob, const struct odt *st)
 	    " style:family=\"paragraph\""
 	    " style:class=\"text\"/>\n"))
 		return 0;
-	if (tab && !HBUF_PUTSL(ob,
+
+	/* Text within block. */
+
+	if (!HBUF_PUTSL(ob,
+	    "<style:style"
+	    " style:name=\"Text_20_body\""
+	    " style:display-name=\"Text body\""
+	    " style:family=\"paragraph\""
+	    " style:parent-style-name=\"Standard\""
+	    " style:class=\"text\">\n"
+	    "<style:paragraph-properties"
+	    " fo:margin-top=\"0cm\""
+	    " fo:margin-bottom=\"0.247cm\""
+	    " style:contextual-spacing=\"false\""
+	    " fo:line-height=\"115%\"/>\n"
+	    "</style:style>\n"))
+		return 0;
+
+	/* Horizontal line. */
+
+	if (!HBUF_PUTSL(ob,
+  	    "<style:style"
+	    " style:family=\"paragraph\""
+	    " style:name=\"Horizontal_20_Line\""
+	    " style:parent-style-name=\"Standard\""
+	    " style:display-name=\"Horizontal Line\""
+	    " style:next-style-name=\"Text_20_body\""
+	    " style:class=\"html\">\n"
+	    "<style:paragraph-properties"
+	    " fo:margin-top=\"0cm\""
+	    " fo:margin-bottom=\"0.499cm\""
+	    " style:contextual-spacing=\"false\""
+	    " style:border-line-width-bottom=\"0.002cm 0.004cm 0.002cm\""
+	    " fo:padding=\"0cm\""
+	    " fo:border-left=\"none\""
+	    " fo:border-right=\"none\""
+	    " fo:border-top=\"none\""
+	    " fo:border-bottom=\"0.14pt double #808080\""
+	    " text:number-lines=\"false\""
+	    " text:line-number=\"0\""
+	    " style:join-border=\"false\"/>\n"
+   	    "<style:text-properties"
+	    " fo:font-size=\"6pt\""
+	    " style:font-size-asian=\"6pt\""
+	    " style:font-size-complex=\"6pt\"/>\n"
+	    "</style:style>\n"))
+		return 0;
+
+	/* Images. */
+
+	if (!HBUF_PUTSL(ob,
+	    "<style:style style:name=\"Graphics\" style:family=\"graphic\">\n"
+	    "<style:graphic-properties"
+	    " text:anchor-type=\"paragraph\""
+	    " svg:x=\"0cm\" svg:y=\"0cm\""
+	    " style:wrap=\"dynamic\""
+	    " style:number-wrapped-paragraphs=\"no-limit\""
+	    " style:wrap-contour=\"false\""
+	    " draw:auto-grow-height=\"true\""
+	    " draw:auto-grow-width=\"true\""
+	    " style:vertical-pos=\"top\""
+	    " style:vertical-rel=\"paragraph\""
+	    " style:horizontal-pos=\"center\""
+	    " style:horizontal-rel=\"paragraph\"/>"
+	    "</style:style>"))
+		return 0;
+
+	/* Internet link. */
+
+	if (!HBUF_PUTSL(ob, 
+	    "<style:style"
+	    " style:family=\"text\""
+	    " style:name=\"Internet_20_Link\""
+	    " style:display-name=\"Internet Link\">\n"
+	    "<style:text-properties"
+   	    " fo:color=\"#000080\""
+	    " loext:opacity=\"100%\""
+	    " fo:language=\"zxx\""
+	    " fo:country=\"none\""
+	    " style:language-asian=\"zxx\""
+	    " style:country-asian=\"none\""
+	    " style:language-complex=\"zxx\""
+	    " style:country-complex=\"none\""
+   	    " style:text-underline-style=\"solid\""
+   	    " style:text-underline-color=\"font-color\""
+	    " style:text-underline-width=\"auto\"/>\n"
+	    "</style:style>\n"))
+		return 0;
+
+	/* Source (preformatted) code. */
+
+	if (!HBUF_PUTSL(ob,
+	    "<style:style"
+	    " style:family=\"text\""
+	    " style:name=\"Source_20_Text\""
+	    " style:display-name=\"Source Text\">\n"
+	    "<style:text-properties"
+	    " style:font-name=\"Liberation Mono\""
+	    " fo:font-family=\"&apos;Liberation Mono&apos;\""
+	    " style:font-family-generic=\"modern\""
+	    " style:font-pitch=\"fixed\""
+	    " style:font-name-asian=\"Liberation Mono\""
+	    " style:font-family-asian="
+	     "\"&apos;Liberation Mono&apos;\""
+	    " style:font-family-generic-asian=\"modern\""
+	    " style:font-pitch-asian=\"fixed\""
+	    " style:font-name-complex=\"Liberation Mono\""
+	    " style:font-family-complex="
+	     "\"&apos;Liberation Mono&apos;\""
+	    " style:font-family-generic-complex=\"modern\""
+	    " style:font-pitch-complex=\"fixed\"/>\n"
+	    "</style:style>\n"))
+		return 0;
+
+	/* Frame (tables). */
+
+	if (!HBUF_PUTSL(ob,
 	    "<style:style"
 	    " style:name=\"Frame\""
 	    " style:family=\"graphic\">\n"
@@ -583,7 +589,10 @@ odt_styles_flush_fixed(struct lowdown_buf *ob, const struct odt *st)
 	    " fo:border=\"0pt solid #000000\"/>\n"
 	    "</style:style>\n"))
 	    	return 0;
-	if (lit && !HBUF_PUTSL(ob,
+
+	/* Preformatted text. */
+
+	if (!HBUF_PUTSL(ob,
 	    "<style:style"
 	    " style:name=\"Preformatted_20_Text\""
 	    " style:display-name=\"Preformatted Text\""
@@ -612,7 +621,10 @@ odt_styles_flush_fixed(struct lowdown_buf *ob, const struct odt *st)
 	    " style:font-size-complex=\"10pt\"/>\n"
 	    "</style:style>\n"))
 		return 0;
-	if (tab && !HBUF_PUTSL(ob,
+
+	/* Table contents. */
+
+	if (!HBUF_PUTSL(ob,
 	    "<style:style"
 	    " style:name=\"Table_20_Contents\""
 	    " style:display-name=\"Table Contents\""
@@ -626,21 +638,10 @@ odt_styles_flush_fixed(struct lowdown_buf *ob, const struct odt *st)
 	    " text:line-number=\"0\"/>\n"
 	    "</style:style>\n"))
 		return 0;
-	if ((h1 || h2 || h3 || hr) && !HBUF_PUTSL(ob,
-	    "<style:style"
-	    " style:name=\"Text_20_body\""
-	    " style:display-name=\"Text body\""
-	    " style:family=\"paragraph\""
-	    " style:parent-style-name=\"Standard\""
-	    " style:class=\"text\">\n"
-	    "<style:paragraph-properties"
-	    " fo:margin-top=\"0cm\""
-	    " fo:margin-bottom=\"0.247cm\""
-	    " style:contextual-spacing=\"false\""
-	    " fo:line-height=\"115%\"/>\n"
-	    "</style:style>\n"))
-		return 0;
-	if ((h1 || h2 || h3) && !HBUF_PUTSL(ob,
+
+	/* Headings. */
+
+	if (!HBUF_PUTSL(ob,
 	    "<style:style"
 	    " style:name=\"Heading\""
 	    " style:family=\"paragraph\""
@@ -669,7 +670,10 @@ odt_styles_flush_fixed(struct lowdown_buf *ob, const struct odt *st)
 	    " style:font-size-complex=\"14pt\"/>\n"
 	    "</style:style>\n"))
 		return 0;
-	if (ulist && !HBUF_PUTSL(ob,
+
+	/* Unordered list. */
+
+	if (!HBUF_PUTSL(ob,
 	    "<style:style"
 	    " style:name=\"Bullet_20_Symbols\""
 	    " style:display-name=\"Bullet Symbols\""
@@ -686,13 +690,19 @@ odt_styles_flush_fixed(struct lowdown_buf *ob, const struct odt *st)
 	    " style:font-charset-complex=\"x-symbol\"/>\n"
    	    "</style:style>\n"))
 		return 0;
-	if (olist && !HBUF_PUTSL(ob,
+
+	/* Ordered list. */
+
+	if (!HBUF_PUTSL(ob,
 	    "<style:style"
 	    " style:name=\"Numbering_20_Symbols\""
 	    " style:display-name=\"Numbering Symbols\""
 	    " style:family=\"text\"/>\n"))
 		return 0;
-	if (h1 && !HBUF_PUTSL(ob,
+
+	/* Headers. */
+
+	if (!HBUF_PUTSL(ob,
 	    "<style:style"
 	    " style:name=\"Heading_20_1\""
 	    " style:display-name=\"Heading 1\""
@@ -714,7 +724,7 @@ odt_styles_flush_fixed(struct lowdown_buf *ob, const struct odt *st)
 	    " style:font-weight-complex=\"bold\"/>\n"
 	    "</style:style>\n"))
 	    	return 0;
-	if (h2 && !HBUF_PUTSL(ob,
+	if (!HBUF_PUTSL(ob,
 	    "<style:style"
 	    " style:name=\"Heading_20_2\""
 	    " style:display-name=\"Heading 2\""
@@ -736,7 +746,7 @@ odt_styles_flush_fixed(struct lowdown_buf *ob, const struct odt *st)
 	    " style:font-weight-complex=\"bold\"/>\n"
 	    "</style:style>\n"))
 	    	return 0;
-	if (h3 && !HBUF_PUTSL(ob,
+	if (!HBUF_PUTSL(ob,
 	    "<style:style"
 	    " style:name=\"Heading_20_3\""
 	    " style:display-name=\"Heading 3\""
@@ -758,7 +768,10 @@ odt_styles_flush_fixed(struct lowdown_buf *ob, const struct odt *st)
 	    " style:font-weight-complex=\"bold\"/>\n"
 	    "</style:style>\n"))
 	    	return 0;
-	if (tab && !HBUF_PUTSL(ob,
+
+	/* Table frames. */
+
+	if (!HBUF_PUTSL(ob,
 	    "<style:style style:name=\"fr1\""
 	    " style:family=\"graphic\""
 	    " style:parent-style-name=\"Frame\">\n"
@@ -773,18 +786,7 @@ odt_styles_flush_fixed(struct lowdown_buf *ob, const struct odt *st)
 	    " </style:style>\n"))
 		return 0;
 
-
-	/* Emit fixed styles. */
-
-	for (i = 0; i < st->stysz; i++)
-		if (!st->stys[i].autosty &&
-		    !odt_sty_flush(ob, st, &st->stys[i]))
-			return 0;
-
-	if (!HBUF_PUTSL(ob,
-	    "</office:styles>\n"))
-		return 0;
-	return 1;
+	return HBUF_PUTSL(ob, "</office:styles>\n");
 }
 
 /*
@@ -803,8 +805,7 @@ odt_styles_flush(struct lowdown_buf *ob, const struct odt *st)
 	if (!HBUF_PUTSL(ob, "<office:automatic-styles>\n"))
 		return 0;
 	for (i = 0; i < st->stysz; i++)
-		if (st->stys[i].autosty &&
-		    !odt_sty_flush(ob, st, &st->stys[i]))
+		if (!odt_sty_flush(ob, st, &st->stys[i]))
 			return 0;
 
 	/*
@@ -908,7 +909,7 @@ odt_changes_flush(struct lowdown_buf *ob,
 		if (author != NULL) {
 			if (!HBUF_PUTSL(ob, "<dc:creator>"))
 				return 0;
-			if (!hesc_html(ob, author,
+			if (!lowdown_html_esc(ob, author,
 			    strlen(author), 1, 0, 1))
 				return 0;
 			if (!HBUF_PUTSL(ob, "</dc:creator>\n"))
@@ -916,7 +917,7 @@ odt_changes_flush(struct lowdown_buf *ob,
 		}
 		if (!HBUF_PUTSL(ob, "<dc:date>"))
 			return 0;
-		if (!hesc_html(ob, date, strlen(date), 1, 0, 1))
+		if (!lowdown_html_esc(ob, date, strlen(date), 1, 0, 1))
 			return 0;
 		if (!HBUF_PUTSL(ob, "</dc:date>\n"))
 			return 0;
@@ -962,8 +963,6 @@ odt_metaq_flush(struct lowdown_buf *ob,
 
 	/* Overrides. */
 
-	if (title == NULL)
-		title = "Untitled article";
 	if (rcsdate != NULL)
 		date = rcsdate;
 	if (rcsauthor != NULL)
@@ -972,23 +971,25 @@ odt_metaq_flush(struct lowdown_buf *ob,
 	if (!HBUF_PUTSL(ob, "<office:meta>\n"))
 		return 0;
 
-	if (!HBUF_PUTSL(ob, "<dc:title>"))
-		return 0;
-	if (!hesc_html(ob, title, strlen(title), 1, 0, 1))
-		return 0;
-	if (!HBUF_PUTSL(ob, "</dc:title>\n"))
-		return 0;
+	if (title != NULL) {
+		if (!HBUF_PUTSL(ob, "<dc:title>"))
+			return 0;
+		if (!lowdown_html_esc(ob, title, strlen(title), 1, 0, 1))
+			return 0;
+		if (!HBUF_PUTSL(ob, "</dc:title>\n"))
+			return 0;
+	}
 
 	if (author != NULL) {
 		if (!HBUF_PUTSL(ob, "<dc:creator>"))
 			return 0;
-		if (!hesc_html(ob, author, strlen(author), 1, 0, 1))
+		if (!lowdown_html_esc(ob, author, strlen(author), 1, 0, 1))
 			return 0;
 		if (!HBUF_PUTSL(ob, "</dc:creator>\n"))
 			return 0;
 		if (!HBUF_PUTSL(ob, "<meta:initial-creator>"))
 			return 0;
-		if (!hesc_html(ob, author, strlen(author), 1, 0, 1))
+		if (!lowdown_html_esc(ob, author, strlen(author), 1, 0, 1))
 			return 0;
 		if (!HBUF_PUTSL(ob, "</meta:initial-creator>\n"))
 			return 0;
@@ -997,13 +998,13 @@ odt_metaq_flush(struct lowdown_buf *ob,
 	if (date != NULL) {
 		if (!HBUF_PUTSL(ob, "<dc:date>"))
 			return 0;
-		if (!hesc_html(ob, date, strlen(date), 1, 0, 1))
+		if (!lowdown_html_esc(ob, date, strlen(date), 1, 0, 1))
 			return 0;
 		if (!HBUF_PUTSL(ob, "</dc:date>\n"))
 			return 0;
 		if (!HBUF_PUTSL(ob, "<meta:creation-date>"))
 			return 0;
-		if (!hesc_html(ob, date, strlen(date), 1, 0, 1))
+		if (!lowdown_html_esc(ob, date, strlen(date), 1, 0, 1))
 			return 0;
 		if (!HBUF_PUTSL(ob, "</meta:creation-date>\n"))
 			return 0;
@@ -1021,7 +1022,7 @@ escape_html(struct lowdown_buf *ob, const char *source,
 	size_t length, const struct odt *st)
 {
 
-	return hesc_html(ob, source, length, 1, 0, 1);
+	return lowdown_html_esc(ob, source, length, 1, 0, 1);
 }
 
 /*
@@ -1043,7 +1044,14 @@ escape_href(struct lowdown_buf *ob, const struct lowdown_buf *in,
 	const struct odt *st)
 {
 
-	return hesc_href(ob, in->data, in->size);
+	return lowdown_html_esc_href(ob, in->data, in->size);
+}
+
+static int
+escape_attr(struct lowdown_buf *ob, const struct lowdown_buf *in)
+{
+
+	return lowdown_html_esc_attr(ob, in->data, in->size);
 }
 
 /*
@@ -1054,16 +1062,13 @@ rndr_autolink(struct lowdown_buf *ob,
 	const struct rndr_autolink *parm,
 	struct odt *st)
 {
-	const char	*sty;
 
 	if (parm->link.size == 0)
 		return 1;
 
-	if ((sty = odt_style_add_text(st, LOWDOWN_LINK)) == NULL)
-		return 0;
-	if (!hbuf_printf(ob,
+	if (!HBUF_PUTSL(ob,
 	    "<text:a xlink:type=\"simple\""
-	    " text:style-name=\"%s\" xlink:href=\"", sty))
+	    " text:style-name=\"Internet_20_Link\" xlink:href=\""))
 		return 0;
 	if (parm->type == HALINK_EMAIL && !HBUF_PUTSL(ob, "mailto:"))
 		return 0;
@@ -1115,7 +1120,6 @@ rndr_blockcode(struct lowdown_buf *ob,
 	if (i == st->stysz) {
 		if ((s = odt_style_add(st)) == NULL)
 			return 0;
-		s->autosty = 1;
 		s->type = LOWDOWN_PARAGRAPH;
 		s->fmt = ODT_STY_LIT;
 		s->parent = st->list;
@@ -1141,7 +1145,7 @@ rndr_blockcode(struct lowdown_buf *ob,
 			if (parm->text.data[i] == ' ' &&
 			    i < parm->text.size - 1 &&
 			    parm->text.data[i + 1] == ' ') {
-				if (!hesc_html(ob,
+				if (!lowdown_html_esc(ob,
 				    &parm->text.data[j], sz, 1, 1, 1))
 					return 0;
 				sz = 0;
@@ -1158,7 +1162,7 @@ rndr_blockcode(struct lowdown_buf *ob,
 			    parm->text.data[i] == '\n')
 				break;
 		}
-		if (!hesc_html(ob, &parm->text.data[j], sz, 1, 1, 1))
+		if (!lowdown_html_esc(ob, &parm->text.data[j], sz, 1, 1, 1))
 			return 0;
 		if (!HBUF_PUTSL(ob, "</text:p>\n"))
 			return 0;
@@ -1177,12 +1181,9 @@ rndr_codespan(struct lowdown_buf *ob,
 	const struct rndr_codespan *param, 
 	struct odt *st)
 {
-	const char	*sty;
 
-	if ((sty = odt_style_add_text(st, LOWDOWN_CODESPAN)) == NULL)
-		return 0;
-	if (!hbuf_printf(ob,
-	    "<text:span text:style-name=\"%s\">", sty))
+	if (!HBUF_PUTSL(ob,
+	    "<text:span text:style-name=\"Source_20_Text\">"))
 		return 0;
 	if (!escape_htmlb(ob, &param->text, st))
 		return 0;
@@ -1226,15 +1227,17 @@ rndr_linebreak(struct lowdown_buf *ob)
 static int
 rndr_header(struct lowdown_buf *ob,
 	const struct lowdown_buf *content,
-	const struct rndr_header *param, 
+	const struct lowdown_node *n, 
 	struct odt *st)
 {
-	struct odt_sty	*sty;
-	ssize_t		 level;
-	size_t		 i;
-	int		 fl;
+	struct odt_sty			*sty;
+	ssize_t				 level;
+	size_t				 i;
+	int				 fl, rc = 0;
+	const struct lowdown_buf	*buf;
+	struct lowdown_buf		*nbuf = NULL;
 
-	level = (ssize_t)param->level + st->headers_offs;
+	level = (ssize_t)n->rndr_header.level + st->headers_offs;
 	if (level < 1)
 		level = 1;
 	else if (level > 3)
@@ -1246,7 +1249,6 @@ rndr_header(struct lowdown_buf *ob,
 		fl = ODT_STY_H2;
 	else
 		fl = ODT_STY_H3;
-
 	for (i = 0; i < st->stysz; i++)
 		if (st->stys[i].type == LOWDOWN_HEADER &&
 		    st->stys[i].fmt == fl)
@@ -1254,7 +1256,6 @@ rndr_header(struct lowdown_buf *ob,
 	if (i == st->stysz) {
 		if ((sty = odt_style_add(st)) == NULL)
 			return 0;
-		sty->autosty = 1;
 		sty->fmt = fl;
 		sty->type = LOWDOWN_HEADER;
 		snprintf(sty->name, sizeof(sty->name),
@@ -1265,12 +1266,55 @@ rndr_header(struct lowdown_buf *ob,
 	if (ob->size && !hbuf_putc(ob, '\n'))
 		return 0;
 	if (!hbuf_printf(ob,
-	     "<text:h text:style-name=\"%s\""
-	     " text:outline-level=\"%zu\">", sty->name, level))
+	     "<text:h"
+	     " text:outline-level=\"%zu\""
+	     " text:style-name=\"%s\"",
+	     level, sty->name))
 		return 0;
+
+	if (n->rndr_header.attr_cls.size > 0) {
+		if (!HBUF_PUTSL(ob, " text:class-names=\""))
+			return 0;
+		if (!hbuf_putb(ob, &n->rndr_header.attr_cls))
+			return 0;
+		if (!HBUF_PUTSL(ob, "\""))
+			return 0;
+	}
+
+	if (!HBUF_PUTSL(ob, ">"))
+		return 0;
+
+	if (n->rndr_header.attr_id.size) {
+		if ((nbuf = hbuf_new(32)) == NULL)
+			goto out;
+		if (!escape_href(nbuf, &n->rndr_header.attr_id, st))
+			goto out;
+		buf = nbuf;
+	} else
+		buf = hbuf_id(NULL, n, &st->headers_used);
+
+	if (buf == NULL)
+		goto out;
+	if (!HBUF_PUTSL(ob, "<text:bookmark-start text:name=\""))
+		goto out;
+	if (!hbuf_putb(ob, buf))
+		goto out;
+	if (!HBUF_PUTSL(ob, "\" />"))
+		goto out;
 	if (!hbuf_putb(ob, content))
-		return 0;
-	return HBUF_PUTSL(ob, "</text:h>\n");
+		goto out;
+	if (!HBUF_PUTSL(ob, "<text:bookmark-end text:name=\""))
+		goto out;
+	if (!hbuf_putb(ob, buf))
+		goto out;
+	if (!HBUF_PUTSL(ob, "\" />"))
+		goto out;
+	if (!HBUF_PUTSL(ob, "</text:h>\n"))
+		goto out;
+	rc = 1;
+out:
+	hbuf_free(nbuf);
+	return rc;
 }
 
 /*
@@ -1282,13 +1326,31 @@ rndr_link(struct lowdown_buf *ob,
 	const struct rndr_link *param,
 	struct odt *st)
 {
-	const char	*sty;
 
-	if ((sty = odt_style_add_text(st, LOWDOWN_LINK)) == NULL)
+	if (param->attr_id.size > 0) {
+		if (!HBUF_PUTSL(ob, "<text:bookmark-start text:name=\""))
+			return 0;
+		if (!hbuf_putb(ob, &param->attr_id))
+			return 0;
+		if (!HBUF_PUTSL(ob, "\" />"))
+			return 0;
+	}
+
+	if (!HBUF_PUTSL(ob,
+	    "<text:a"
+	    " xlink:type=\"simple\""
+	    " text:style-name=\"Internet_20_Link\""))
 		return 0;
-	if (!hbuf_printf(ob,
-	    "<text:a xlink:type=\"simple\" "
-	    "text:style-name=\"%s\" xlink:href=\"", sty))
+
+	if (param->attr_cls.size > 0) {
+		if (!HBUF_PUTSL(ob, " text:class-names=\""))
+			return 0;
+		if (!hbuf_putb(ob, &param->attr_cls))
+			return 0;
+		if (!HBUF_PUTSL(ob, "\""))
+			return 0;
+	}
+	if (!HBUF_PUTSL(ob, " xlink:href=\""))
 		return 0;
 	if (!escape_href(ob, &param->link, st))
 		return 0;
@@ -1297,6 +1359,14 @@ rndr_link(struct lowdown_buf *ob,
 	    !HBUF_PUTSL(ob, "</text:a>"))
 		return 0;
 
+	if (param->attr_id.size > 0) {
+		if (!HBUF_PUTSL(ob, "<text:bookmark-end text:name=\""))
+			return 0;
+		if (!hbuf_putb(ob, &param->attr_id))
+			return 0;
+		if (!HBUF_PUTSL(ob, "\" />"))
+			return 0;
+	}
 	return 1;
 }
 
@@ -1359,7 +1429,6 @@ rndr_listitem(struct lowdown_buf *ob,
 		if (i == st->stysz) {
 			if ((sty = odt_style_add(st)) == NULL)
 				return 0;
-			sty->autosty = 1;
 			sty->parent = st->list;
 			sty->foot = st->foot;
 			sty->fmt = ODT_STY_PARA;
@@ -1441,7 +1510,6 @@ rndr_paragraph(struct lowdown_buf *ob,
 	if (j == st->stysz) {
 		if ((sty = odt_style_add(st)) == NULL)
 			return 0;
-		sty->autosty = 1;
 		sty->foot = st->foot;
 		sty->fmt = ODT_STY_PARA;
 		sty->type = LOWDOWN_PARAGRAPH;
@@ -1482,42 +1550,85 @@ rndr_html(struct lowdown_buf *ob,
 static int
 rndr_hrule(struct lowdown_buf *ob, struct odt *st)
 {
-	size_t	 	 i;
-	struct odt_sty	*s;
-
-	for (i = 0; i < st->stysz; i++)
-		if (st->stys[i].type == LOWDOWN_HRULE &&
-		    st->stys[i].foot == st->foot) {
-			assert(st->stys[i].fmt == ODT_STY_PARA);
-			break;
-		}
-
-	if (i == st->stysz) {
-		if ((s = odt_style_add(st)) == NULL)
-			return 0;
-		s->type = LOWDOWN_HRULE;
-		s->fmt = ODT_STY_PARA;
-		s->foot = st->foot;
-		strlcpy(s->name, "Horizontal_20_Line",
-			sizeof(s->name));
-	} else
-		s = &st->stys[i];
 
 	if (ob->size && !hbuf_putc(ob, '\n'))
 		return 0;
-	return hbuf_printf(ob,
-		"<text:p text:style-name=\"%s\"/>\n", s->name);
+	return HBUF_PUTSL(ob,
+		"<text:p text:style-name=\"Horizontal_20_Line\"/>\n");
 }
 
-/*
- * TODO: not implemented yet.  Return FALSE on failure, TRUE on success.
- */
 static int
 rndr_image(struct lowdown_buf *ob,
 	const struct rndr_image *param, 
 	const struct odt *st)
 {
-	return 1;
+	unsigned int	 x = 0, y = 0;
+	char		 dimbuf[32];
+
+	/*
+	 * Scan in our dimensions, if applicable.
+	 * It's unreasonable for them to be over 32 characters, so use
+	 * that as a cap to the size.
+	 */
+
+	if (param->dims.size && 
+	    param->dims.size < sizeof(dimbuf) - 1) {
+		memset(dimbuf, 0, sizeof(dimbuf));
+		memcpy(dimbuf, param->dims.data, param->dims.size);
+		if (sscanf(dimbuf, "%ux%u", &x, &y) != 2)
+			x = y = 0;
+	}
+
+	if (!HBUF_PUTSL(ob,
+	    "<draw:frame"
+	    " draw:name=\"Image1\""
+	    " text:anchor-type=\"as-char\""
+	    " draw:z-index=\"0\""
+	    " draw:style-name=\"Graphics\""))
+		return 0;
+
+	if (param->attr_cls.size > 0) {
+		if (!HBUF_PUTSL(ob, " draw:class-names=\""))
+			return 0;
+		if (!hbuf_putb(ob, &param->attr_cls))
+			return 0;
+		if (!HBUF_PUTSL(ob, "\""))
+			return 0;
+	}
+
+	if (param->attr_width.size || param->attr_height.size) {
+		if (param->attr_width.size)
+			if (!HBUF_PUTSL(ob, " svg:width=\"") ||
+			    !escape_attr(ob, &param->attr_width) ||
+			    !HBUF_PUTSL(ob, "\""))
+				return 0;
+		if (param->attr_height.size)
+			if (!HBUF_PUTSL(ob, " svg:height=\"") ||
+			    !escape_attr(ob, &param->attr_height) ||
+			    !HBUF_PUTSL(ob, "\""))
+				return 0;
+	} else if (x > 0 && y > 0) {
+		if (!hbuf_printf(ob,
+		    " svg:width=\"%u px\""
+		    " svg:height=\"%u px\"", x, y))
+			return 0;
+	}
+
+	if (!HBUF_PUTSL(ob, "><draw:image xlink:href=\""))
+		return 0;
+	if (!hbuf_putb(ob, &param->link))
+		return 0;
+	if (!HBUF_PUTSL(ob, "\""
+	    " xlink:type=\"simple\""
+	    " xlink:show=\"embed\""
+	    " xlink:actuate=\"onLoad\""
+	    " draw:filter-name=\"&lt;All images&gt;\" />"))
+		return 0;
+	if (!HBUF_PUTSL(ob, "<svg:title>"))
+		return 0;
+	if (!hbuf_putb(ob, &param->alt))
+		return 0;
+	return HBUF_PUTSL(ob, "</svg:title></draw:frame>");
 }
 
 /*
@@ -1548,7 +1659,6 @@ rndr_table(struct lowdown_buf *ob,
 	if (pid == st->stysz) {
 		if ((s = odt_style_add(st)) == NULL)
 			return 0;
-		s->autosty = 1;
 		s->parent = st->list;
 		s->foot = st->foot;
 		s->fmt = ODT_STY_PARA;
@@ -1572,7 +1682,6 @@ rndr_table(struct lowdown_buf *ob,
 	if (i == st->stysz) {
 		if ((s = odt_style_add(st)) == NULL)
 			return 0;
-		s->autosty = 1;
 		s->type = LOWDOWN_TABLE_BLOCK;
 		s->fmt = ODT_STY_TBL;
 		s->foot = st->foot;
@@ -1656,7 +1765,6 @@ rndr_tablecell(struct lowdown_buf *ob,
 	if (i == st->stysz) {
 		if ((s = odt_style_add(st)) == NULL)
 			return 0;
-		s->autosty = 1;
 		s->type = LOWDOWN_PARAGRAPH;
 		s->foot = st->foot;
 		s->fmt = ODT_STY_TBL_PARA;
@@ -1679,28 +1787,9 @@ rndr_tablecell(struct lowdown_buf *ob,
  */
 static int
 rndr_footnote_ref(struct lowdown_buf *ob,
-	const struct rndr_footnote_ref *param,
-	struct odt *st)
+	const struct lowdown_buf *content, struct odt *st)
 {
-	const struct lowdown_node	*n;
-	struct odt			 tmp;
-
-	/* Don't allow nested footnotes. */
-
-	if (st->foot)
-		return 1;
-
-	/* Look up footnote definition and exit if not found. */
-
-	if (st->foots == NULL)
-		return 1;
-	TAILQ_FOREACH(n, &st->foots->children, entries)
-		if (n->type != LOWDOWN_FOOTNOTE_DEF)
-			continue;
-		else if (n->rndr_footnote_def.num == param->num)
-			break;
-	if (n == NULL)
-		return 1;
+	struct odt	 tmp;
 
 	/* Save state values. */
 
@@ -1708,14 +1797,15 @@ rndr_footnote_ref(struct lowdown_buf *ob,
 	st->offs = 0;
 	st->list = (size_t)-1;
 	st->foot = 1;
+	st->footcount++;
 
 	if (!hbuf_printf(ob,
 	    "<text:note text:id=\"ftn%zu\""
 	    " text:note-class=\"footnote\">"
 	    "<text:note-citation>%zu</text:note-citation>"
-	    "<text:note-body>\n", param->num, param->num))
+	    "<text:note-body>\n", st->footcount, st->footcount))
 		return 0;
-	if (!rndr(ob, NULL, st, n))
+	if (!hbuf_putb(ob, content))
 		return 0;
 	if (!HBUF_PUTSL(ob,
 	    "</text:note-body></text:note>\n"))
@@ -1804,31 +1894,6 @@ rndr_root(struct lowdown_buf *ob, const struct lowdown_metaq *mq,
 	    !odt_metaq_flush(ob, mq, st))
 		return 0;
 
-	/* 
-	 * These fonts are only referenced in the non-automatic styles,
-	 * so don't emit them for non-standalone mode.
-	 */
-
-	if ((st->flags & LOWDOWN_STANDALONE) && !HBUF_PUTSL(ob,
-	    "<office:font-face-decls>\n"
-  	    "<style:font-face style:name=\"OpenSymbol\""
-	    " svg:font-family=\"OpenSymbol\""
-	    " style:font-charset=\"x-symbol\"/>\n"
-	    "<style:font-face style:name=\"Liberation Mono\""
-	    " svg:font-family=\"&apos;Liberation Mono&apos;\""
-	    " style:font-family-generic=\"modern\""
-	    " style:font-pitch=\"fixed\"/>\n"
-	    "<style:font-face style:name=\"Liberation Serif\""
-	    " svg:font-family=\"&apos;Liberation Serif&apos;\""
-	    " style:font-family-generic=\"roman\""
-	    " style:font-pitch=\"variable\"/>\n"
-	    "<style:font-face style:name=\"Liberation Sans\""
-	    " svg:font-family=\"&apos;Liberation Sans&apos;\""
-	    " style:font-family-generic=\"swiss\""
-	    " style:font-pitch=\"variable\"/>\n"
-	    "</office:font-face-decls>\n"))
-		return 0;
-
 	if (!odt_styles_flush(ob, st))
 		return 0;
 
@@ -1863,27 +1928,15 @@ rndr_meta(struct lowdown_buf *ob,
 	ssize_t			 val;
 	const char		*ep;
 
-	m = calloc(1, sizeof(struct lowdown_meta));
-	if (m == NULL)
-		return 0;
-	TAILQ_INSERT_TAIL(mq, m, entries);
-
-	m->key = strndup(n->rndr_meta.key.data,
-		n->rndr_meta.key.size);
-	if (m->key == NULL)
-		return 0;
-	m->value = strndup(content->data, content->size);
-	if (m->value == NULL)
+	if ((m = lowdown_get_meta(n, mq)) == NULL)
 		return 0;
 
 	if (strcmp(m->key, "shiftheadinglevelby") == 0) {
-		val = (ssize_t)strtonum
-			(m->value, -100, 100, &ep);
+		val = (ssize_t)strtonum(m->value, -100, 100, &ep);
 		if (ep == NULL)
 			st->headers_offs = val + 1;
 	} else if (strcmp(m->key, "baseheaderlevel") == 0) {
-		val = (ssize_t)strtonum
-			(m->value, 1, 100, &ep);
+		val = (ssize_t)strtonum(m->value, 1, 100, &ep);
 		if (ep == NULL)
 			st->headers_offs = val;
 	}
@@ -1901,9 +1954,9 @@ rndr(struct lowdown_buf *ob,
 	int32_t				 ent;
 	struct odt			*st = ref;
 	struct odt_sty			*sty = NULL;
-	size_t				 curid = (size_t)-1, curoffs,
+	size_t				 curid = (size_t)-1, curoffs = 0,
 					 chngid = (size_t)-1;
-	int				 ret = 1, rc = 1;
+	int				 ret = 1;
 	void				*pp;
 
 	if ((tmp = hbuf_new(64)) == NULL)
@@ -1925,6 +1978,7 @@ rndr(struct lowdown_buf *ob,
 	 */
 
 	switch (n->type) {
+	case LOWDOWN_DEFINITION_DATA:
 	case LOWDOWN_BLOCKQUOTE:
 		if (st->list == (size_t)-1)
 			st->offs++;
@@ -1954,7 +2008,6 @@ rndr(struct lowdown_buf *ob,
 			if (n->rndr_list.flags & HLIST_FL_UNORDERED)
 				sty->fmt = ODT_STY_UL;
 			sty->offs = st->offs;
-			sty->autosty = 1;
 			snprintf(sty->name, sizeof(sty->name),
 				"L%zu", st->sty_L++);
 		}
@@ -1966,14 +2019,9 @@ rndr(struct lowdown_buf *ob,
 		break;
 	}
 
-	/* Skip footnotes. */
-
-	TAILQ_FOREACH(child, &n->children, entries) {
-		if (child->type == LOWDOWN_FOOTNOTES_BLOCK)
-			continue;
+	TAILQ_FOREACH(child, &n->children, entries)
 		if (!rndr(tmp, mq, st, child))
 			goto out;
-	}
 
 	if (n->chng == LOWDOWN_CHNG_INSERT ||
 	    n->chng == LOWDOWN_CHNG_DELETE) {
@@ -1988,100 +2036,120 @@ rndr(struct lowdown_buf *ob,
 		if (!hbuf_printf(ob,
 		    "<text:change-start"
 		    " text:change-id=\"ct%zu\"/>", chngid))
-			return 0;
+			goto out;
 	}
 
 	switch (n->type) {
 	case LOWDOWN_ROOT:
-		rc = rndr_root(ob, mq, tmp, st);
+		if (!rndr_root(ob, mq, tmp, st))
+			goto out;
 		break;
 	case LOWDOWN_BLOCKCODE:
-		rc = rndr_blockcode(ob, &n->rndr_blockcode, st);
+		if (!rndr_blockcode(ob, &n->rndr_blockcode, st))
+			goto out;
 		break;
 	case LOWDOWN_META:
-		if (n->chng != LOWDOWN_CHNG_DELETE)
-			rc = rndr_meta(ob, tmp, mq, n, st);
+		if (n->chng != LOWDOWN_CHNG_DELETE &&
+		    !rndr_meta(ob, tmp, mq, n, st))
+			goto out;
 		break;
 	case LOWDOWN_HEADER:
-		rc = rndr_header(ob, tmp, &n->rndr_header, st);
+		if (!rndr_header(ob, tmp, n, st))
+			goto out;
 		break;
 	case LOWDOWN_HRULE:
-		rc = rndr_hrule(ob, st);
+		if (!rndr_hrule(ob, st))
+			goto out;
 		break;
 	case LOWDOWN_LIST:
-		rc = rndr_list(ob, tmp, &n->rndr_list,
-			curid == (size_t)-1 ?
-			NULL : st->stys[curid].name);
+		if (!rndr_list(ob, tmp, &n->rndr_list,
+		     curid == (size_t)-1 ? NULL : st->stys[curid].name))
+			goto out;
 		break;
 	case LOWDOWN_LISTITEM:
-		rc = rndr_listitem(ob, tmp, n, st);
+		if (!rndr_listitem(ob, tmp, n, st))
+			goto out;
 		break;
-	/* TODO */
-	case LOWDOWN_DEFINITION_DATA:
-	/* TODO */
 	case LOWDOWN_DEFINITION_TITLE:
+	case LOWDOWN_DEFINITION_DATA:
 	case LOWDOWN_PARAGRAPH:
-		rc = rndr_paragraph(ob, tmp, st);
+		if (!rndr_paragraph(ob, tmp, st))
+			goto out;
 		break;
 	case LOWDOWN_TABLE_BLOCK:
-		rc = rndr_table(ob, tmp, &n->rndr_table, st);
+		if (!rndr_table(ob, tmp, &n->rndr_table, st))
+			goto out;
 		break;
 	case LOWDOWN_TABLE_ROW:
-		rc = rndr_tablerow(ob, tmp);
+		if (!rndr_tablerow(ob, tmp))
+			goto out;
 		break;
 	case LOWDOWN_TABLE_CELL:
-		rc = rndr_tablecell(ob, tmp, &n->rndr_table_cell, st);
+		if (!rndr_tablecell(ob, tmp, &n->rndr_table_cell, st))
+			goto out;
 		break;
 	case LOWDOWN_BLOCKHTML:
-		rc = rndr_html(ob, &n->rndr_blockhtml.text, st);
+		if (!rndr_html(ob, &n->rndr_blockhtml.text, st))
+			goto out;
 		break;
 	case LOWDOWN_LINK_AUTO:
-		rc = rndr_autolink(ob, &n->rndr_autolink, st);
+		if (!rndr_autolink(ob, &n->rndr_autolink, st))
+			goto out;
 		break;
 	case LOWDOWN_CODESPAN:
-		rc = rndr_codespan(ob, &n->rndr_codespan, st);
+		if (!rndr_codespan(ob, &n->rndr_codespan, st))
+			goto out;
 		break;
 	case LOWDOWN_TRIPLE_EMPHASIS:
 	case LOWDOWN_DOUBLE_EMPHASIS:
 	case LOWDOWN_EMPHASIS:
 	case LOWDOWN_STRIKETHROUGH:
 	case LOWDOWN_HIGHLIGHT:
+	case LOWDOWN_SUBSCRIPT:
 	case LOWDOWN_SUPERSCRIPT:
-		rc = rndr_span(ob, tmp, n, st);
+		if (!rndr_span(ob, tmp, n, st))
+			goto out;
 		break;
 	case LOWDOWN_IMAGE:
-		rc = rndr_image(ob, &n->rndr_image, st);
+		if (!rndr_image(ob, &n->rndr_image, st))
+			goto out;
 		break;
 	case LOWDOWN_LINEBREAK:
-		rc = rndr_linebreak(ob);
+		if (!rndr_linebreak(ob))
+			goto out;
 		break;
 	case LOWDOWN_LINK:
-		rc = rndr_link(ob, tmp, &n->rndr_link, st);
+		if (!rndr_link(ob, tmp, &n->rndr_link, st))
+			goto out;
 		break;
-	case LOWDOWN_FOOTNOTE_REF:
-		rc = rndr_footnote_ref(ob, &n->rndr_footnote_ref, st);
+	case LOWDOWN_FOOTNOTE:
+		if (!rndr_footnote_ref(ob, tmp, st))
+			goto out;
 		break;
 	case LOWDOWN_MATH_BLOCK:
-		rc = rndr_math(ob, &n->rndr_math, st);
+		if (!rndr_math(ob, &n->rndr_math, st))
+			goto out;
 		break;
 	case LOWDOWN_RAW_HTML:
-		rc = rndr_html(ob, &n->rndr_raw_html.text, st);
+		if (!rndr_html(ob, &n->rndr_raw_html.text, st))
+			goto out;
 		break;
 	case LOWDOWN_NORMAL_TEXT:
-		rc = escape_htmlb(ob, &n->rndr_normal_text.text, st);
+		if (!escape_htmlb(ob, &n->rndr_normal_text.text, st))
+			goto out;
 		break;
 	case LOWDOWN_ENTITY:
 		ent = entity_find_iso(&n->rndr_entity.text);
-		rc = ent > 0 ?
-			hbuf_printf(ob, "&#%" PRId32 ";", ent) :
-			hbuf_putb(ob, &n->rndr_entity.text);
+		if (ent > 0 && !hbuf_printf(ob, "&#%" PRId32 ";", ent))
+			goto out;
+		if (ent <= 0 && !hbuf_putb(ob, &n->rndr_entity.text))
+			goto out;
 		break;
 	default:
-		rc = hbuf_putb(ob, tmp);
+		if (!hbuf_putb(ob, tmp))
+			goto out;
 		break;
 	}
-	if (!rc)
-		goto out;
 
 	if (n->chng == LOWDOWN_CHNG_INSERT ||
 	    n->chng == LOWDOWN_CHNG_DELETE) {
@@ -2089,10 +2157,11 @@ rndr(struct lowdown_buf *ob,
 		if (!hbuf_printf(ob,
 		    "<text:change-end"
 		    " text:change-id=\"ct%zu\"/>", chngid))
-			return 0;
+			goto out;
 	}
 
 	switch (n->type) {
+	case LOWDOWN_DEFINITION_DATA:
 	case LOWDOWN_BLOCKQUOTE:
 		if (st->list == (size_t)-1)
 			st->offs--;
@@ -2121,34 +2190,24 @@ lowdown_odt_rndr(struct lowdown_buf *ob,
 	struct lowdown_metaq	 metaq;
 	int			 rc;
 
+	TAILQ_INIT(&st->headers_used);
 	TAILQ_INIT(&metaq);
 	st->headers_offs = 1;
 	st->stys = NULL;
 	st->stysz = 0;
 	st->list = (size_t)-1;
 	st->foot = 0;
-	st->foots = NULL;
+	st->footcount = 0;
 	st->sty_T = st->sty_L = st->sty_P = st->sty_Table = 1;
 	st->chngs = NULL;
 	st->chngsz = 0;
-
-	/* 
-	 * Keep tabs of where the footnote block is, if any.  This is
-	 * because we need to inline footnote definitions directly where
-	 * we have the references.
-	 */
-
-	if (n->type == LOWDOWN_ROOT)
-		TAILQ_FOREACH_REVERSE(st->foots,
-		    &n->children, lowdown_nodeq, entries)
-			if (st->foots->type == LOWDOWN_FOOTNOTES_BLOCK)
-				break;
 
 	rc = rndr(ob, &metaq, st, n);
 
 	free(st->stys);
 	free(st->chngs);
 	lowdown_metaq_free(&metaq);
+	hentryq_clear(&st->headers_used);
 	return rc;
 }
 
@@ -2161,12 +2220,22 @@ lowdown_odt_new(const struct lowdown_opts *opts)
 		return NULL;
 
 	p->flags = opts == NULL ? 0 : opts->oflags;
+	if (opts != NULL && opts->odt.sty != NULL &&
+	    (p->sty = strdup(opts->odt.sty)) == NULL) {
+		free(p);
+		p = NULL;
+	}
+
 	return p;
 }
 
 void
 lowdown_odt_free(void *arg)
 {
+	struct odt	*p = arg;
 
-	free(arg);
+	if (p != NULL)
+		free(p->sty);
+
+	free(p);
 }
